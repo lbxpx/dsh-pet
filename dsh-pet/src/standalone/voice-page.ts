@@ -12,7 +12,7 @@ export const voicePage = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>声音录制向导</title><link rel="stylesheet" href="/standalone-ai/voice.css">
 <script src="/standalone-ai/voice.js" defer></script></head><body><main>
-<header><p class="local">独立桌宠 / 声线录制</p><h1>声音录制向导</h1>
+<header><p class="local">独立桌宠 / 声线录制</p><h1>声音录制与声线库</h1>
 <p class="intro">40 句，约 6–10 分钟。全部在本机完成，录音只保存在 <code>~/.dsh/dsh-pet/voices/</code>。</p></header>
 
 <section id="setup" class="card">
@@ -34,8 +34,13 @@ export const voicePage = `<!doctype html>
   <audio id="playback" controls hidden></audio>
 </section>
 
-<section class="card"><p class="hint">已有声线：<span id="sessions">读取中…</span></p>
-<p class="hint"><a id="back" href="/standalone-ai/">返回设置</a></p></section>
+<section class="card" id="library">
+  <div class="topbar"><h2>声线库</h2><button id="refresh" class="secondary" type="button">刷新</button></div>
+  <p class="hint">「设为当前」会把桌宠朗读切到这条声线；「试听」用当前本机服务合成同一句，方便横向比较。删除不可恢复，当前使用中的声线需先切换。</p>
+  <p id="library-msg" class="msg" role="status" aria-live="polite"></p>
+  <div id="voices"></div>
+  <p class="hint"><a id="back" href="/standalone-ai/">返回设置</a></p>
+</section>
 </main></body></html>`;
 
 export const voiceStyle = `
@@ -56,6 +61,12 @@ button.secondary{background:#fff;color:var(--blue);border:1.5px solid var(--blue
 .meter{display:flex;align-items:center;gap:12px;margin-top:16px}.bar{flex:1 1 auto;height:12px;border-radius:6px;background:#dbe8f0;overflow:hidden}.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#2e9e4f,#e8b62f,#e5453a);transition:width .08s linear}
 #level-text{font:12px/1 ui-monospace,Consolas,monospace;color:var(--muted);min-width:64px;text-align:right}
 audio{display:block;width:100%;margin-top:14px}a{color:var(--blue)}
+.card h2{font-size:20px;margin:0}.voice-item{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 0;border-top:1px solid var(--line);flex-wrap:wrap}
+.voice-item:first-child{border-top:0}.voice-name{font-weight:700;font-size:16px}.voice-meta{font-size:12px;color:var(--muted);margin-top:2px;word-break:break-all}
+.voice-actions{display:flex;gap:8px;flex-wrap:wrap}.voice-actions button{min-height:34px;padding:5px 12px;font-size:13px;border-radius:6px}
+.voice-actions button.danger{background:#fff;color:#a13b30;border:1.5px solid #c4564a}.voice-actions button.danger:hover{background:#fdf0ee}
+.badge{font-size:11px;color:#1a7f37;background:#e8f5ec;border-radius:999px;padding:2px 8px;margin-left:6px;vertical-align:middle}
+#library-msg{min-height:20px;font-size:13px}#refresh{min-height:34px;padding:5px 14px;font-size:13px}
 @media(max-width:560px){main{margin:20px auto}.sentence{font-size:22px}.countdown{font-size:52px}button{width:100%}.row{flex-direction:column;align-items:stretch}}
 `;
 
@@ -111,13 +122,129 @@ export const voiceScript = `
 
   if (!token) { setupMessage('请从桌宠菜单或本机启动器重新打开设置，再进入录制向导。', true); return; }
 
-  api('/standalone-ai/voice/sessions')
-    .then(data => {
-      const list = data.sessions || [];
-      get('sessions').textContent = list.length === 0 ? '还没有录过' :
-        list.map(item => item.name + '（' + item.recorded + '/' + item.total + '）').join('、');
-    })
-    .catch(() => { get('sessions').textContent = '读取失败'; });
+  let libraryAudio = null;
+  function libraryMessage(message, error) {
+    const node = get('library-msg');
+    node.textContent = message || '';
+    node.className = 'msg' + (error ? ' err' : ' ok');
+  }
+  function actionButton(label, handler, danger) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = danger ? 'danger' : 'secondary';
+    button.textContent = label;
+    button.addEventListener('click', handler);
+    return button;
+  }
+  function renderVoices(list) {
+    const box = get('voices');
+    box.replaceChildren();
+    if (list.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'hint';
+      empty.textContent = '还没有完成录制的声线。先在上面录完 40 句并点「完成」。';
+      box.appendChild(empty);
+      return;
+    }
+    for (const voice of list) {
+      const card = document.createElement('div');
+      card.className = 'voice-item';
+      const info = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'voice-name';
+      title.textContent = voice.name;
+      if (voice.active) {
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = '当前使用';
+        title.appendChild(badge);
+      }
+      const meta = document.createElement('div');
+      meta.className = 'voice-meta';
+      const date = voice.createdAt ? voice.createdAt.slice(0, 10) : '—';
+      meta.textContent = voice.recorded + '/' + voice.total + ' 句 · ' + date +
+        (voice.refSeconds ? ' · 参考 ' + voice.refSeconds + 's' : '') + ' · ' + voice.id;
+      info.appendChild(title);
+      info.appendChild(meta);
+      const actions = document.createElement('div');
+      actions.className = 'voice-actions';
+      const unusable = voice.status !== 'ready' || !voice.recorded;
+      const preview = actionButton('试听', () => previewVoice(voice));
+      preview.disabled = unusable;
+      const active = actionButton('设为当前', () => setActiveVoice(voice));
+      active.disabled = unusable || voice.active === true;
+      const rename = actionButton('重命名', () => renameVoice(voice));
+      const remove = actionButton('删除', () => deleteVoice(voice), true);
+      remove.disabled = voice.active === true;
+      actions.appendChild(preview);
+      actions.appendChild(active);
+      actions.appendChild(rename);
+      actions.appendChild(remove);
+      card.appendChild(info);
+      card.appendChild(actions);
+      box.appendChild(card);
+    }
+  }
+  async function loadSessions() {
+    try {
+      const data = await api('/standalone-ai/voice/sessions');
+      renderVoices(data.sessions || []);
+    } catch (error) {
+      libraryMessage('读取声线库失败：' + (error && error.message ? error.message : String(error)), true);
+    }
+  }
+  async function previewVoice(voice) {
+    try {
+      libraryMessage('正在用「' + voice.name + '」合成试听…');
+      const data = await api('/standalone-ai/tts/test', {
+        method: 'POST',
+        body: JSON.stringify({ provider: 'local', voiceId: voice.id, rate: 0 })
+      });
+      if (!data.url) throw new Error(data.message || '没有返回试听音频');
+      if (libraryAudio) { libraryAudio.pause(); libraryAudio = null; }
+      libraryAudio = new Audio(data.url);
+      libraryAudio.addEventListener('ended', () => libraryMessage('✓ 「' + voice.name + '」试听完成'));
+      await libraryAudio.play();
+      libraryMessage('▶ 正在播放「' + voice.name + '」的试听');
+    } catch (error) {
+      libraryMessage('✗ ' + (error && error.message ? error.message : String(error)), true);
+    }
+  }
+  async function setActiveVoice(voice) {
+    try {
+      await api('/standalone-ai/voice/active', { method: 'POST', body: JSON.stringify({ id: voice.id }) });
+      libraryMessage('✓ 已把「' + voice.name + '」设为当前声线，朗读会立即使用它');
+      await loadSessions();
+    } catch (error) {
+      libraryMessage('✗ ' + (error && error.message ? error.message : String(error)), true);
+    }
+  }
+  async function renameVoice(voice) {
+    const name = prompt('新的声音名称（1–40 字）', voice.name);
+    if (name === null) return;
+    try {
+      await api('/standalone-ai/voice/session/' + encodeURIComponent(voice.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ name })
+      });
+      libraryMessage('✓ 已重命名为「' + name.trim() + '」');
+      await loadSessions();
+    } catch (error) {
+      libraryMessage('✗ ' + (error && error.message ? error.message : String(error)), true);
+    }
+  }
+  async function deleteVoice(voice) {
+    if (!confirm('删除「' + voice.name + '」？录音与 manifest 会一起删除，且不可恢复。')) return;
+    try {
+      await api('/standalone-ai/voice/session/' + encodeURIComponent(voice.id), { method: 'DELETE' });
+      libraryMessage('✓ 已删除「' + voice.name + '」');
+      await loadSessions();
+    } catch (error) {
+      libraryMessage('✗ ' + (error && error.message ? error.message : String(error)), true);
+    }
+  }
+  get('refresh').addEventListener('click', () => { void loadSessions(); });
+  void loadSessions();
 
   api('/standalone-ai/voice/script')
     .then(data => {
@@ -373,6 +500,7 @@ export const voiceScript = `
       });
       finished = true;
       result('✓ 完成：' + data.session.dir + '（共 ' + data.session.recorded + ' 句，参考音频 ' + data.ref + '）', 'ok');
+      void loadSessions();
       get('record').hidden = true;
       get('redo').hidden = true;
       get('next').hidden = true;

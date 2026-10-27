@@ -631,3 +631,84 @@ test('录制向导：页面公开、API 要令牌；会话/录音/完成整条�
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('声线库管理：active / 改名 / 当前声线拒绝删除 / 删除目录', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-pet-voice-manage-'));
+  let activeVoice = '';
+  const ai = {
+    getSettings: () => ({ ttsVoiceId: activeVoice }),
+    saveSettings: async (input: unknown) => {
+      const patch = input as { ttsVoiceId?: string };
+      if (typeof patch.ttsVoiceId === 'string') activeVoice = patch.ttsVoiceId;
+      return { ttsVoiceId: activeVoice };
+    },
+  };
+  const server = await listenStandaloneServer({ port: 0, security, logger: silent, routes: [], home, ai });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const headers = { 'X-DSH-Pet-Token': security.token };
+    const json = { ...headers, 'Content-Type': 'application/json' };
+    const created = await (
+      await fetch(base + '/standalone-ai/voice/session', {
+        method: 'POST',
+        headers: json,
+        body: JSON.stringify({ name: '小蓝', consent: true }),
+      })
+    ).json();
+    const id = created.session.id;
+    await fetch(base + `/standalone-ai/voice/session/${id}/clip/1`, {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Type': 'audio/wav' },
+      body: makeWav(3),
+    });
+    await fetch(base + `/standalone-ai/voice/session/${id}/finish`, {
+      method: 'POST',
+      headers: json,
+      body: '{}',
+    });
+
+    let sessions = (await (await fetch(base + '/standalone-ai/voice/sessions', { headers })).json()).sessions;
+    assert.equal(sessions[0].active, false);
+    assert.equal(sessions[0].status, 'ready');
+    assert.equal(sessions[0].recorded, 1);
+    assert.equal(typeof sessions[0].createdAt, 'string');
+    assert.equal(typeof sessions[0].refSeconds, 'number');
+
+    const activated = await fetch(base + '/standalone-ai/voice/active', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({ id }),
+    });
+    assert.deepEqual(await activated.json(), { ok: true, active: id });
+    sessions = (await (await fetch(base + '/standalone-ai/voice/sessions', { headers })).json()).sessions;
+    assert.equal(sessions[0].active, true);
+
+    // 当前使用中的声线不能删
+    const refused = await fetch(base + `/standalone-ai/voice/session/${id}`, { method: 'DELETE', headers });
+    assert.equal((await refused.json()).ok, false);
+
+    const renamed = await fetch(base + `/standalone-ai/voice/session/${id}`, {
+      method: 'PATCH',
+      headers: json,
+      body: JSON.stringify({ name: '小蓝二号' }),
+    });
+    assert.equal((await renamed.json()).session.name, '小蓝二号');
+    sessions = (await (await fetch(base + '/standalone-ai/voice/sessions', { headers })).json()).sessions;
+    assert.equal(sessions[0].name, '小蓝二号');
+
+    // 先切回 Edge，再删除
+    await fetch(base + '/standalone-ai/voice/active', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({ id: '' }),
+    });
+    const removed = await fetch(base + `/standalone-ai/voice/session/${id}`, { method: 'DELETE', headers });
+    assert.equal((await removed.json()).ok, true);
+    assert.equal(existsSync(join(home, 'dsh-pet', 'voices', id)), false);
+    sessions = (await (await fetch(base + '/standalone-ai/voice/sessions', { headers })).json()).sessions;
+    assert.equal(sessions.length, 0);
+  } finally {
+    await server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});

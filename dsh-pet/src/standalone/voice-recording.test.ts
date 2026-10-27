@@ -137,3 +137,35 @@ test('listVoiceSessions：损坏的会话跳过，不影响其它会话', async 
     f.cleanup();
   }
 });
+
+test('声线库：getSession 带 ref 信息；rename 只改名字；delete 删整目录', async () => {
+  const f = fixture();
+  try {
+    const studio = createVoiceStudio(join(f.root, 'voices'), () => FIXED);
+    const session = await studio.createSession({ name: '小蓝', consent: true });
+    await studio.saveClip(session.id, 1, makeWav(3));
+    await studio.finish(session.id);
+
+    const detail = await studio.getSession(session.id);
+    assert.equal(detail.status, 'ready');
+    assert.equal(detail.recorded, 1);
+    assert.equal(detail.refSeconds, 3);
+    assert.ok((detail.refBytes ?? 0) > 44);
+    assert.equal(typeof detail.createdAt, 'string');
+
+    const renamed = await studio.renameSession(session.id, '  新名字  ');
+    assert.equal(renamed.name, '新名字');
+    const manifest = JSON.parse(readFileSync(join(session.dir, 'manifest.json'), 'utf8'));
+    assert.equal(manifest.name, '新名字');
+    assert.equal(manifest.id, session.id, 'id/目录不变');
+
+    const removed = await studio.deleteSession(session.id);
+    assert.deepEqual(removed, { id: session.id, name: '新名字' });
+    assert.equal(existsSync(session.dir), false);
+    await assert.rejects(studio.getSession(session.id), /不存在/);
+    await assert.rejects(studio.renameSession(session.id, 'x'), /不存在/);
+    await assert.rejects(studio.deleteSession('../../etc'), /不存在/);
+  } finally {
+    f.cleanup();
+  }
+});

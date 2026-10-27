@@ -13,7 +13,7 @@
  * 会话 id 由服务端生成且只含安全字符——目录名永远不来自客户端输入。
  */
 import { randomBytes } from 'node:crypto';
-import { copyFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { VOICE_SAMPLE_RATE, analyzeSamples, judgeVoiceClip, parsePcm16Wav, type VoiceMetrics } from './voice-format';
 import { VOICE_SENTENCES, voiceSentence, type VoiceCategory } from './voice-sentences';
@@ -53,6 +53,11 @@ export interface VoiceSessionSummary {
   dir: string;
   total: number;
   recorded: number;
+  createdAt?: string;
+  status?: 'recording' | 'ready';
+  /** 参考音频时长（秒）与大小（字节）：声线库列表展示用，缺失时为 undefined */
+  refSeconds?: number;
+  refBytes?: number;
 }
 
 export interface SavedClip extends VoiceSessionSummary {
@@ -70,6 +75,12 @@ export interface VoiceStudio {
   createSession(input: { name: unknown; consent: unknown }): Promise<VoiceSessionSummary>;
   saveClip(sessionId: string, sentenceId: unknown, wav: Buffer): Promise<SavedClip>;
   finish(sessionId: string): Promise<FinishedSession>;
+  /** 单条声线详情（含 ref 时长/大小；不存在 → 抛错） */
+  getSession(sessionId: string): Promise<VoiceSessionSummary>;
+  /** 改名（id / 目录不变，只改 manifest.name） */
+  renameSession(sessionId: string, name: unknown): Promise<VoiceSessionSummary>;
+  /** 删除整条声线目录（不可恢复；调用方负责拒绝删除“当前使用中”的声线） */
+  deleteSession(sessionId: string): Promise<{ id: string; name: string }>;
 }
 
 const SESSION_ID = /^v-\d{8}-\d{6}-[0-9a-f]{4}$/;
@@ -95,7 +106,32 @@ async function writeManifest(file: string, manifest: VoiceManifest): Promise<voi
 }
 
 function summary(id: string, dir: string, manifest: VoiceManifest): VoiceSessionSummary {
-  return { id, name: manifest.name, dir, total: VOICE_SENTENCES.length, recorded: manifest.clips.length };
+  return {
+    id,
+    name: manifest.name,
+    dir,
+    total: VOICE_SENTENCES.length,
+    recorded: manifest.clips.length,
+    createdAt: manifest.createdAt,
+    status: manifest.status,
+  };
+}
+
+/** 列表/详情补充 ref 信息（stat 失败不影响其余字段） */
+async function withRef(
+  summaryValue: VoiceSessionSummary,
+  dir: string,
+  manifest: VoiceManifest,
+): Promise<VoiceSessionSummary> {
+  const ref = manifest.ref ?? 'ref.wav';
+  try {
+    summaryValue.refBytes = (await stat(join(dir, ref))).size;
+  } catch {
+    /* ref 还没生成（录制中） */
+  }
+  const clip = manifest.clips.find((item) => item.id === manifest.refClipId);
+  if (clip) summaryValue.refSeconds = clip.durationSec;
+  return summaryValue;
 }
 
 /**
@@ -214,6 +250,26 @@ export function createVoiceStudio(voicesRoot: string, now: () => number = Date.n
       await writeManifest(join(dir, 'manifest.json'), manifest);
       return { ...summary(sessionId, dir, manifest), ref: 'ref.wav', manifest };
     },
+
+    async getSession(sessionId) {
+      const { dir, manifest } = await load(sessionId);
+      return withRef(summary(sessionId, dir, manifest), dir, manifest);
+    },
+
+    async renameSession(sessionId, name) {
+      const clean = sanitizeName(name);
+      const { dir, manifest } = await load(sessionId);
+      manifest.name = clean;
+      await writeManifest(join(dir, 'manifest.json'), manifest);
+      return withRef(summary(sessionId, dir, manifest), dir, manifest);
+    },
+
+    async deleteSession(sessionId) {
+      const { dir, manifest } = await load(sessionId);
+      // 整目录删除：dataset + ref + manifest 一起走；id 已在 load 里按形状校验过
+      await rm(dir, { recursive: true, force: true });
+      return { id: sessionId, name: manifest.name };
+    },
   };
 }
 
@@ -232,7 +288,8 @@ export async function listVoiceSessions(voicesRoot: string): Promise<VoiceSessio
     try {
       const manifest = JSON.parse(await readFile(join(voicesRoot, id, 'manifest.json'), 'utf8')) as VoiceManifest;
       if (manifest?.version === 1 && manifest.id === id) {
-        out.push(summary(id, join(voicesRoot, id), manifest));
+        const dir = join(voicesRoot, id);
+        out.push(await withRef(summary(id, dir, manifest), dir, manifest));
       }
     } catch {
       /* 单个会话损坏不影响列表 */

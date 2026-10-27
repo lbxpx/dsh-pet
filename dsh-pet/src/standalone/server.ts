@@ -294,6 +294,7 @@ function sessionSummaryOf(value: { id: string; name: string; dir: string; total:
 function voiceApiHandler(
   studio: ReturnType<typeof createVoiceStudio> | undefined,
   voicesRoot: string,
+  ai: StandaloneSettingsService | undefined,
 ): (req: IncomingMessage, res: ServerResponse, pathname: string) => Promise<void> {
   return async (req, res, pathname) => {
     if (!studio) {
@@ -321,7 +322,61 @@ function voiceApiHandler(
         rejectRequest(res, 405, '仅支持 GET');
         return;
       }
-      sendJson(res, 200, { ok: true, sessions: await listVoiceSessions(voicesRoot) });
+      const settings = ai?.getSettings?.() as { ttsVoiceId?: unknown } | undefined;
+      const activeId = typeof settings?.ttsVoiceId === 'string' ? settings.ttsVoiceId : '';
+      const sessions = (await listVoiceSessions(voicesRoot)).map((session) => ({
+        ...session,
+        active: session.id === activeId,
+      }));
+      sendJson(res, 200, { ok: true, sessions });
+      return;
+    }
+    if (pathname === '/standalone-ai/voice/active') {
+      if (method !== 'POST') {
+        rejectRequest(res, 405, '仅支持 POST');
+        return;
+      }
+      if (!ai?.saveSettings) {
+        rejectRequest(res, 503, 'AI 设置服务尚未就绪');
+        return;
+      }
+      try {
+        const input = await readJsonObject(req);
+        const id = typeof input.id === 'string' ? input.id : '';
+        if (id) {
+          const session = await studio.getSession(id);
+          if (session.status !== 'ready') throw new Error('这条声线还没完成录制，不能设为当前');
+        }
+        await ai.saveSettings({ ttsProvider: id ? 'local' : 'edge', ttsVoiceId: id });
+        sendJson(res, 200, { ok: true, active: id });
+      } catch (error) {
+        sendJson(res, 200, { ok: false, message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    const managedSession = /^\/standalone-ai\/voice\/session\/([^/]+)$/.exec(pathname);
+    if (managedSession) {
+      const id = managedSession[1];
+      if (method === 'PATCH') {
+        try {
+          const input = await readJsonObject(req);
+          sendJson(res, 200, { ok: true, session: await studio.renameSession(id, input.name) });
+        } catch (error) {
+          sendJson(res, 200, { ok: false, message: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
+      if (method === 'DELETE') {
+        try {
+          const settings = ai?.getSettings?.() as { ttsVoiceId?: unknown } | undefined;
+          if (settings?.ttsVoiceId === id) throw new Error('这是当前正在使用的声线，请先切换到其它声线再删除');
+          sendJson(res, 200, { ok: true, removed: await studio.deleteSession(id) });
+        } catch (error) {
+          sendJson(res, 200, { ok: false, message: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
+      rejectRequest(res, 405, '仅支持 PATCH 或 DELETE');
       return;
     }
     if (pathname === '/standalone-ai/voice/session') {
@@ -399,7 +454,7 @@ function dispatch(
   const exporter = historyExportHandler(options.ai);
   const clearer = historyClearHandler(options.ai);
   const voicesRoot = options.home ? join(options.home, 'dsh-pet', 'voices') : '';
-  const voiceApi = voiceApiHandler(voicesRoot ? createVoiceStudio(voicesRoot) : undefined, voicesRoot);
+  const voiceApi = voiceApiHandler(voicesRoot ? createVoiceStudio(voicesRoot) : undefined, voicesRoot, options.ai);
   return (req, res, pathname) => {
     const method = req.method ?? 'GET';
     if (method === 'OPTIONS') {

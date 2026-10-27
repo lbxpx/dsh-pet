@@ -34,7 +34,7 @@ export const settingsPage = `<!doctype html>
 <label for="ttsLocalUrl">本机声线服务地址</label><input id="ttsLocalUrl" maxlength="2048" spellcheck="false" placeholder="http://127.0.0.1:9880">
 <p class="hint">只支持本机 http 地址。启动 GPT-SoVITS 的 <code>api_v2.py</code> 后填它的端口；语速 0 = 正常，负数更慢，正数更快。</p>
 <div class="test-row"><button id="tts-test-btn" type="button">试听</button><span id="tts-test-result" class="test-result" role="status" aria-live="polite"></span></div>
-<div class="test-row"><button id="voice-wizard" type="button" class="secondary">打开录制向导</button><span class="hint">录制 40 句（约 6–10 分钟），生成可克隆的声线</span></div>
+<div class="test-row"><button id="voice-wizard" type="button" class="secondary">录制 / 声线库</button><span class="hint">录制 40 句或管理已有声线（试听 / 设为当前 / 重命名 / 删除）</span></div>
 </fieldset>
 <fieldset><legend>对话与历史</legend>
 <label for="persona">人格提示词</label><textarea id="persona" name="persona" rows="4" maxlength="4000" spellcheck="false" placeholder="例如：你是主人的桌面小助手，说话简洁、先给结论。留空则使用桌宠配置里的 whisperPrompt。"></textarea>
