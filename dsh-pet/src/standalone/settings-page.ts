@@ -31,6 +31,7 @@ export const settingsPage = `<!doctype html>
 <div><label for="ttsRate">语速（-50 ~ 100）</label><input id="ttsRate" type="number" min="-50" max="100" step="5" value="0" required></div></div>
 <p class="hint">语速 0 = 正常，负数更慢，正数更快。</p>
 <div class="test-row"><button id="tts-test-btn" type="button">试听</button><span id="tts-test-result" class="test-result" role="status" aria-live="polite"></span></div>
+<div class="test-row"><button id="voice-wizard" type="button" class="secondary">打开录制向导</button><span class="hint">录制 40 句（约 6–10 分钟），生成可克隆的声线</span></div>
 </fieldset>
 <fieldset><legend>对话与历史</legend>
 <label for="persona">人格提示词</label><textarea id="persona" name="persona" rows="4" maxlength="4000" spellcheck="false" placeholder="例如：你是主人的桌面小助手，说话简洁、先给结论。留空则使用桌宠配置里的 whisperPrompt。"></textarea>
@@ -178,6 +179,12 @@ export const settingsScript = `
       } finally {
         ttsTestBtn.disabled = false;
       }
+    });
+  }
+  const voiceWizard = get('voice-wizard');
+  if (voiceWizard) {
+    voiceWizard.addEventListener('click', () => {
+      location.href = '/standalone-ai/voice#token=' + encodeURIComponent(token);
     });
   }
   function historyMessage(text, error = false) {

@@ -72,6 +72,7 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
     port: options.port,
     security,
     ai,
+    home,
     status: () => ({
       name: 'dsh-pet-standalone',
       pid: process.pid,

@@ -9,11 +9,41 @@ import { after, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type { RegisteredRoute, StandaloneLogger } from './context.ts';
 import { createRequestListener, listenStandaloneServer } from './server.ts';
 import { createRequestSecurity } from './request-security.ts';
 const security = createRequestSecurity();
+
+/** 造一段 32kHz 单声道 16-bit WAV（前 0.4s 静音，其余正常音量正弦波） */
+function makeWav(seconds: number): Buffer {
+  const sampleRate = 32_000;
+  const count = Math.round(seconds * sampleRate);
+  const data = Buffer.alloc(count * 2);
+  for (let i = 0; i < count; i += 1) {
+    const t = i / sampleRate;
+    const value = t < 0.4 ? 0 : Math.sin(2 * Math.PI * 220 * t) * 0.2;
+    data.writeInt16LE(Math.round(value * 32767), i * 2);
+  }
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0, 'ascii');
+  header.writeUInt32LE(36 + data.length, 4);
+  header.write('WAVE', 8, 'ascii');
+  header.write('fmt ', 12, 'ascii');
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36, 'ascii');
+  header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+}
 
 /** 静默日志器（测试只断言行为） */
 const silent: StandaloneLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
@@ -507,5 +537,93 @@ test('bounded body replay preserves plugin readBody; chunked and stalled inputs 
     assert.equal(calls, 1);
   } finally {
     await server.close();
+  }
+});
+
+test('录制向导：页面公开、API 要令牌；会话/录音/完成整条链路落盘', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-pet-voice-http-'));
+  const server = await listenStandaloneServer({ port: 0, security, logger: silent, routes: [], home });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const headers = { 'X-DSH-Pet-Token': security.token };
+    const json = { ...headers, 'Content-Type': 'application/json' };
+
+    const shell = await fetch(base + '/standalone-ai/voice');
+    assert.equal(shell.status, 200);
+    assert.match(shell.headers.get('content-security-policy') ?? '', /media-src 'self' blob:/);
+    assert.match(await shell.text(), /声音录制向导/);
+
+    // 页面外壳公开，数据接口一律要令牌
+    assert.equal((await fetch(base + '/standalone-ai/voice/script')).status, 403);
+    assert.equal((await fetch(base + '/standalone-ai/voice/sessions')).status, 403);
+
+    const scriptRes = await fetch(base + '/standalone-ai/voice/script', { headers });
+    assert.equal(scriptRes.status, 200);
+    const script = await scriptRes.json();
+    assert.equal(script.ok, true);
+    assert.equal(script.sentences.length, 40);
+    assert.equal(script.sampleRate, 32_000);
+    assert.equal(script.categories.long, '长句停顿');
+
+    // 未同意 → 业务失败（200 + ok:false），不创建目录
+    const refused = await fetch(base + '/standalone-ai/voice/session', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({ name: '小蓝', consent: false }),
+    });
+    assert.equal(refused.status, 200);
+    assert.equal((await refused.json()).ok, false);
+
+    const created = await fetch(base + '/standalone-ai/voice/session', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({ name: '小蓝', consent: true }),
+    });
+    assert.equal(created.status, 200);
+    const session = (await created.json()).session;
+    assert.match(session.id, /^v-\d{8}-\d{6}-[0-9a-f]{4}$/);
+
+    // 内容类型不对 → 415；合法 WAV → 质检结果 + 落盘
+    const wrongType = await fetch(base + `/standalone-ai/voice/session/${session.id}/clip/1`, {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Type': 'text/plain' },
+      body: 'x',
+    });
+    assert.equal(wrongType.status, 415);
+    const clipRes = await fetch(base + `/standalone-ai/voice/session/${session.id}/clip/1`, {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Type': 'audio/wav' },
+      body: makeWav(3),
+    });
+    assert.equal(clipRes.status, 200);
+    const clip = await clipRes.json();
+    assert.equal(clip.ok, true, clip.message);
+    assert.equal(clip.clip.id, 1);
+    assert.deepEqual(clip.issues, []);
+    assert.ok(Math.abs(clip.clip.metrics.durationSec - 3) < 0.1);
+    const sessionDir = join(home, 'dsh-pet', 'voices', session.id);
+    assert.equal(existsSync(join(sessionDir, 'dataset', '1.wav')), true);
+    assert.equal(existsSync(join(sessionDir, 'dataset', '1.txt')), true);
+
+    const finishRes = await fetch(base + `/standalone-ai/voice/session/${session.id}/finish`, {
+      method: 'POST',
+      headers: json,
+      body: '{}',
+    });
+    assert.equal(finishRes.status, 200);
+    const finished = await finishRes.json();
+    assert.equal(finished.ok, true, finished.message);
+    assert.equal(finished.ref, 'ref.wav');
+    assert.equal(existsSync(join(sessionDir, 'ref.wav')), true);
+
+    const sessions = await (await fetch(base + '/standalone-ai/voice/sessions', { headers })).json();
+    assert.equal(sessions.sessions.length, 1);
+    assert.equal(sessions.sessions[0].name, '小蓝');
+    assert.equal(sessions.sessions[0].recorded, 1);
+
+    assert.equal((await fetch(base + '/standalone-ai/voice/nope', { headers })).status, 404);
+  } finally {
+    await server.close();
+    rmSync(home, { recursive: true, force: true });
   }
 });

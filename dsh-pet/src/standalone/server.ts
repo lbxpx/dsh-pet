@@ -1,7 +1,7 @@
 /** Standalone loopback HTTP boundary. Desktop bridge requests never pass through this listener. */
 import { timingSafeEqual } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
 import type { RegisteredRoute, StandaloneLogger } from './context';
@@ -11,6 +11,10 @@ import { boundedRequest, MAX_REQUEST_BYTES, MAX_SETTINGS_BYTES } from './request
 import { publicSettings, validateSettings } from './settings';
 import type { StandaloneSettingsService } from './settings';
 import { settingsPage, settingsScript, settingsStyle } from './settings-page';
+import { voicePage, voiceScript, voiceStyle } from './voice-page';
+import { createVoiceStudio, listVoiceSessions } from './voice-recording';
+import { VOICE_CATEGORY_LABELS, VOICE_SENTENCES } from './voice-sentences';
+import { VOICE_MAX_SEC, VOICE_MIN_SEC, VOICE_SAMPLE_RATE } from './voice-format';
 
 export const DEFAULT_STANDALONE_PORT = 3080;
 export const PORT_SCAN_LIMIT = 25;
@@ -22,6 +26,8 @@ export interface StandaloneServerOptions {
   onShutdown?: () => void;
   security?: RequestSecurity;
   ai?: StandaloneSettingsService;
+  /** DSH_HOME（= ~/.dsh）：录制会话落到 `<home>/dsh-pet/voices/`；不传时录制 API 回 503 */
+  home?: string;
   /** Override only for deterministic timeout tests. */
   bodyTimeoutMs?: number;
 }
@@ -49,7 +55,7 @@ function sendAsset(res: ServerResponse, body: string, type: string): void {
     'content-type': `${type}; charset=utf-8`,
     'content-length': Buffer.byteLength(body),
     'content-security-policy':
-      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; media-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     'x-frame-options': 'DENY',
   });
   res.end(body);
@@ -235,6 +241,145 @@ function historyClearHandler(
   };
 }
 
+/** 读取一个 JSON 对象请求体（录制会话创建等小请求） */
+async function readJsonObject(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  await new Promise<void>((resolve, reject) => {
+    req.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+    req.once('end', resolve);
+    req.once('error', reject);
+  });
+  const raw = Buffer.concat(chunks).toString('utf8');
+  const parsed: unknown = raw ? JSON.parse(raw) : {};
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('请求格式无效');
+  return parsed as Record<string, unknown>;
+}
+
+/** 读取二进制请求体（WAV 上传；boundedRequest 已按 MAX_REQUEST_BYTES 卡过总大小） */
+async function readBinaryBody(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  await new Promise<void>((resolve, reject) => {
+    req.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+    req.once('end', resolve);
+    req.once('error', reject);
+  });
+  return Buffer.concat(chunks);
+}
+
+function sessionSummaryOf(value: { id: string; name: string; dir: string; total: number; recorded: number }): {
+  id: string;
+  name: string;
+  dir: string;
+  total: number;
+  recorded: number;
+} {
+  return { id: value.id, name: value.name, dir: value.dir, total: value.total, recorded: value.recorded };
+}
+
+/**
+ * 录制向导的 API（全部要 `x-dsh-pet-token`；页面外壳本身是 publicRead）。
+ *
+ * 业务失败统一 HTTP 200 + `{ ok:false, message }`：页面直接把 message 显示给用户，
+ * 不需要区分 4xx 种类；真正的协议错误（方法不对、body 非对象）才用 4xx。
+ */
+function voiceApiHandler(
+  studio: ReturnType<typeof createVoiceStudio> | undefined,
+  voicesRoot: string,
+): (req: IncomingMessage, res: ServerResponse, pathname: string) => Promise<void> {
+  return async (req, res, pathname) => {
+    if (!studio) {
+      rejectRequest(res, 503, '录制功能尚未就绪（未提供 DSH_HOME）');
+      return;
+    }
+    const method = req.method ?? 'GET';
+    if (pathname === '/standalone-ai/voice/script') {
+      if (method !== 'GET' && method !== 'HEAD') {
+        rejectRequest(res, 405, '仅支持 GET');
+        return;
+      }
+      sendJson(res, 200, {
+        ok: true,
+        sampleRate: VOICE_SAMPLE_RATE,
+        minSec: VOICE_MIN_SEC,
+        maxSec: VOICE_MAX_SEC,
+        categories: VOICE_CATEGORY_LABELS,
+        sentences: VOICE_SENTENCES,
+      });
+      return;
+    }
+    if (pathname === '/standalone-ai/voice/sessions') {
+      if (method !== 'GET' && method !== 'HEAD') {
+        rejectRequest(res, 405, '仅支持 GET');
+        return;
+      }
+      sendJson(res, 200, { ok: true, sessions: await listVoiceSessions(voicesRoot) });
+      return;
+    }
+    if (pathname === '/standalone-ai/voice/session') {
+      if (method !== 'POST') {
+        rejectRequest(res, 405, '仅支持 POST');
+        return;
+      }
+      try {
+        const input = await readJsonObject(req);
+        sendJson(res, 200, {
+          ok: true,
+          session: await studio.createSession({ name: input.name, consent: input.consent }),
+        });
+      } catch (error) {
+        sendJson(res, 200, { ok: false, message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    const clipMatch = /^\/standalone-ai\/voice\/session\/([^/]+)\/clip\/(\d+)$/.exec(pathname);
+    if (clipMatch) {
+      if (method !== 'PUT') {
+        rejectRequest(res, 405, '仅支持 PUT');
+        return;
+      }
+      const type = String(req.headers['content-type'] ?? '').toLowerCase();
+      if (!type.startsWith('audio/wav') && !type.startsWith('application/octet-stream')) {
+        rejectRequest(res, 415, '请上传 WAV 录音');
+        return;
+      }
+      try {
+        const body = await readBinaryBody(req);
+        const saved = await studio.saveClip(clipMatch[1], clipMatch[2], body);
+        sendJson(res, 200, {
+          ok: true,
+          session: sessionSummaryOf(saved),
+          clip: saved.clip,
+          issues: saved.issues,
+          warnings: saved.warnings,
+        });
+      } catch (error) {
+        sendJson(res, 200, { ok: false, message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    const finishMatch = /^\/standalone-ai\/voice\/session\/([^/]+)\/finish$/.exec(pathname);
+    if (finishMatch) {
+      if (method !== 'POST') {
+        rejectRequest(res, 405, '仅支持 POST');
+        return;
+      }
+      try {
+        const finished = await studio.finish(finishMatch[1]);
+        sendJson(res, 200, {
+          ok: true,
+          session: sessionSummaryOf(finished),
+          ref: finished.ref,
+          manifest: finished.manifest,
+        });
+      } catch (error) {
+        sendJson(res, 200, { ok: false, message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    rejectRequest(res, 404, '没有这条录制接口');
+  };
+}
+
 function dispatch(
   options: StandaloneServerOptions,
   shutdownSecurity?: RequestSecurity,
@@ -244,6 +389,8 @@ function dispatch(
   const ttsTester = ttsTestHandler(options.ai);
   const exporter = historyExportHandler(options.ai);
   const clearer = historyClearHandler(options.ai);
+  const voicesRoot = options.home ? join(options.home, 'dsh-pet', 'voices') : '';
+  const voiceApi = voiceApiHandler(voicesRoot ? createVoiceStudio(voicesRoot) : undefined, voicesRoot);
   return (req, res, pathname) => {
     const method = req.method ?? 'GET';
     if (method === 'OPTIONS') {
@@ -283,6 +430,9 @@ function dispatch(
       '/standalone-ai/': [settingsPage, 'text/html'],
       '/standalone-ai/settings.js': [settingsScript, 'text/javascript'],
       '/standalone-ai/settings.css': [settingsStyle, 'text/css'],
+      '/standalone-ai/voice': [voicePage, 'text/html'],
+      '/standalone-ai/voice.js': [voiceScript, 'text/javascript'],
+      '/standalone-ai/voice.css': [voiceStyle, 'text/css'],
     };
     const asset = assets[pathname];
     if (asset) {
@@ -291,6 +441,10 @@ function dispatch(
         return;
       }
       sendAsset(res, asset[0], asset[1]);
+      return;
+    }
+    if (pathname.startsWith('/standalone-ai/voice/')) {
+      void voiceApi(req, res, pathname).catch((error: unknown) => fail(res, error, options.logger));
       return;
     }
     if (pathname === '/standalone-ai/settings') {
