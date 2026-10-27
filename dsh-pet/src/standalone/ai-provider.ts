@@ -1,9 +1,32 @@
 import { z } from 'zod';
+import { basename, join } from 'node:path';
 import type { StandaloneLogger } from './context';
 import { createAiConfig } from './ai-config';
 import type { StandaloneAiPublicSettings } from './ai-config';
 import { isAuthenticationFailure, isRateLimitFailure, sdkTextStream } from './ai-transport';
 import type { AiFetch, AiRequest, AiTransportEvent } from './ai-transport';
+import { synthesize } from '../host/tts';
+
+/** 语音试听的固定文本（短句：合成快、缓存命中后瞬时返回；重复点击不会再发微软请求） */
+export const TTS_TEST_TEXT = '你好呀，我是你的桌面宠物。听到这句话，就说明语音播放已经换成渲染端啦。';
+
+/**
+ * 语音合成失败的**用户可读**提示（不把整段命令行/路径抛到设置页）。
+ * 三种真实场景各自给一句能动手的话：没装 Python、Python 里没有 edge-tts、联网合成超时。
+ */
+export function ttsFailureMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (/No module named ['"]?edge_tts/i.test(raw)) {
+    return 'Python 里没有 edge-tts：请先安装（pip install edge-tts），或重新创建 tts-venv';
+  }
+  if (/ENOENT|not recognized|系统找不到指定的文件/i.test(raw)) {
+    return '找不到 Python：请确认已安装 Python，或设置 DSH_PET_TTS_PYTHON 指向解释器';
+  }
+  if (/timed? ?out|ETIMEDOUT/i.test(raw)) {
+    return '语音合成超时：请检查网络（合成需要联网访问微软语音服务）后重试';
+  }
+  return '语音合成失败：' + raw.slice(0, 200);
+}
 
 const PROVIDER = 'standalone';
 const MAX_INPUT_CHARS = 32_768;
@@ -42,6 +65,13 @@ export interface StandaloneAiService {
     model?: string;
     apiKey?: string;
   }): Promise<{ ok: boolean; message: string; reply?: string }>;
+  /** 设置页「试听」：用当前（或表单里未保存的）音色/语速合成一句固定话，返回可播放的宿主路径 */
+  testTts?(input?: { voice?: string; rate?: number }): Promise<{
+    ok: boolean;
+    message: string;
+    url?: string;
+    text?: string;
+  }>;
   isReady(): boolean;
   canWhisper(): boolean;
   /** 解析后的对话历史文件绝对路径（AI 设置里的 historyPath 或默认位置） */
@@ -303,6 +333,30 @@ export function createStandaloneAi(
         return { ok: false, message: `连接失败：${rawMsg}` };
       } finally {
         clearTimeout(timer);
+      }
+    },
+    async testTts(input?: { voice?: string; rate?: number }) {
+      if (disposed) return { ok: false, message: '服务已关闭' };
+      const current = store.current();
+      // 表单里改了音色/语速还没保存也能试听：合法就用表单值，否则回落已保存值
+      const voice =
+        typeof input?.voice === 'string' && /^[A-Za-z0-9-]+Neural$/.test(input.voice) ? input.voice : current.ttsVoice;
+      const rateInput = Number(input?.rate);
+      const rate =
+        Number.isFinite(rateInput) && rateInput >= -50 && rateInput <= 100 ? Math.round(rateInput) : current.ttsRate;
+      try {
+        const file = await synthesize(TTS_TEST_TEXT, { userRoot: join(home, 'dsh-pet'), voice, rate });
+        if (!file) return { ok: false, message: '语音合成失败：没有生成音频文件' };
+        // 与宿主 publishVoice 写进 voice 叶子的地址同一口径：同源路径，设置页直接给 <audio> 播
+        return {
+          ok: true,
+          message: '语音合成成功，正在播放',
+          url: `/dsh-pet-7340/tts/${basename(file)}`,
+          text: TTS_TEST_TEXT,
+        };
+      } catch (error) {
+        logger.warn('Standalone TTS test failed: ' + (error instanceof Error ? error.message : String(error)));
+        return { ok: false, message: ttsFailureMessage(error) };
       }
     },
     canWhisper: () => ready() && store.current().automaticWhispers,

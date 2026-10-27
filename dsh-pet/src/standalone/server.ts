@@ -49,7 +49,7 @@ function sendAsset(res: ServerResponse, body: string, type: string): void {
     'content-type': `${type}; charset=utf-8`,
     'content-length': Buffer.byteLength(body),
     'content-security-policy':
-      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     'x-frame-options': 'DENY',
   });
   res.end(body);
@@ -139,6 +139,54 @@ function testHandler(
   };
 }
 
+/**
+ * 设置页「试听」：语音播放已经改到渲染端，所以这里只负责**合成**并回一个同源音频地址，
+ * 播不播、怎么播由设置页自己的 HTMLAudioElement 决定（与桌宠窗口同一条渲染端链路）。
+ * 合成失败（没装 Python / 没装 edge-tts / 断网）一律回 `ok:false` + 用户能动手的提示。
+ */
+function ttsTestHandler(
+  ai: StandaloneSettingsService | undefined,
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  return async (req, res) => {
+    if (!ai?.testTts) {
+      rejectRequest(res, 503, '语音试听尚未就绪');
+      return;
+    }
+    if (req.method !== 'POST') {
+      rejectRequest(res, 405, '仅支持 POST');
+      return;
+    }
+    let payload: unknown;
+    try {
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        req.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+        req.once('end', resolve);
+        req.once('error', reject);
+      });
+      const raw = Buffer.concat(chunks).toString('utf8');
+      payload = raw ? JSON.parse(raw) : {};
+    } catch {
+      rejectRequest(res, 400, '请求格式无效');
+      return;
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      rejectRequest(res, 400, '请求格式无效');
+      return;
+    }
+    const input = payload as { voice?: unknown; rate?: unknown };
+    sendJson(
+      res,
+      200,
+      await ai.testTts({
+        // 表单里未保存的音色/语速也能试听；类型不对就交给上层回落已保存值
+        voice: typeof input.voice === 'string' ? input.voice : undefined,
+        rate: typeof input.rate === 'number' && Number.isFinite(input.rate) ? input.rate : undefined,
+      }),
+    );
+  };
+}
+
 function historyExportHandler(
   ai: StandaloneSettingsService | undefined,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
@@ -193,6 +241,7 @@ function dispatch(
 ): (req: IncomingMessage, res: ServerResponse, pathname: string) => void {
   const settings = settingsHandler(options.ai);
   const tester = testHandler(options.ai);
+  const ttsTester = ttsTestHandler(options.ai);
   const exporter = historyExportHandler(options.ai);
   const clearer = historyClearHandler(options.ai);
   return (req, res, pathname) => {
@@ -250,6 +299,10 @@ function dispatch(
     }
     if (pathname === '/standalone-ai/test') {
       void tester(req, res).catch((error: unknown) => fail(res, error, options.logger));
+      return;
+    }
+    if (pathname === '/standalone-ai/tts/test') {
+      void ttsTester(req, res).catch((error: unknown) => fail(res, error, options.logger));
       return;
     }
     if (pathname === '/standalone-ai/history/export') {

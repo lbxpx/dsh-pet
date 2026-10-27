@@ -766,7 +766,13 @@ export function apply(ctx: any): void {
       // 让"看不见的宠物"保持安静，也让这条语音自然过期。
       const surface = voiceSurface(display, helper?.isRunning() === true);
       if (surface === null) return;
-      state.writePet(petId, 'voice', { url: `${ROUTE_PREFIX}/tts/${basename(file)}`, surface });
+      // text/ts 供 /state 消费端排障与将来的「最近朗读」类展示；播放只认 url
+      state.writePet(petId, 'voice', {
+        url: `${ROUTE_PREFIX}/tts/${basename(file)}`,
+        text,
+        ts: Date.now(),
+        surface,
+      });
     } catch {
       /* 合成失败只影响声音，不影响这一轮对话 / 碎碎念 */
     }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createStandaloneAi } from './ai-provider.ts';
+import { TTS_TEST_TEXT, createStandaloneAi, ttsFailureMessage } from './ai-provider.ts';
 import { isolatedFetch } from './ai-transport.ts';
 import { DEFAULT_AI_SETTINGS } from './ai-config.ts';
 
@@ -367,4 +367,16 @@ test('testConnection checks parameters and reports success or friendly error', a
       return new Response('Unauthorized', { status: 401 });
     },
   );
+});
+
+test('TTS 试听：固定短句 + 三条可动手的失败提示（不把整段命令行抛给用户）', () => {
+  assert.match(TTS_TEST_TEXT, /桌面宠物/);
+  assert.match(
+    ttsFailureMessage(new Error("Command failed: python -m edge_tts\nNo module named 'edge_tts'")),
+    /pip install edge-tts/,
+  );
+  assert.match(ttsFailureMessage(new Error('spawn python ENOENT')), /DSH_PET_TTS_PYTHON/);
+  assert.match(ttsFailureMessage(new Error('Command failed: timed out')), /检查网络/);
+  // 未知错误保留前 200 字，便于现场判断（不吞掉信息）
+  assert.match(ttsFailureMessage(new Error('x'.repeat(500))), /语音合成失败：x{200}$/);
 });

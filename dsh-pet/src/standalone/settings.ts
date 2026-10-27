@@ -12,6 +12,13 @@ export interface StandaloneSettingsService {
     model?: string;
     apiKey?: string;
   }): Promise<{ ok: boolean; message: string; reply?: string }>;
+  /** 语音试听（可选：老实现不提供时设置页明确报「尚未就绪」） */
+  testTts?(input?: { voice?: string; rate?: number }): Promise<{
+    ok: boolean;
+    message: string;
+    url?: string;
+    text?: string;
+  }>;
 }
 
 const endpoint = z

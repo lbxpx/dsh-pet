@@ -345,14 +345,20 @@ describe('HTTP boundary protects every route and settings', () => {
         void input;
         return { ok: true, message: '连接成功', reply: 'pong' };
       },
+      testTts: async (input?: { voice?: string; rate?: number }) => {
+        ttsInput = input;
+        return { ok: true, message: '合成成功', url: '/dsh-pet-7340/tts/x.mp3', text: '试听文本' };
+      },
     };
     const server = await listenStandaloneServer({ port: 0, security, logger: silent, routes: [], ai });
+    let ttsInput: { voice?: string; rate?: number } | undefined;
     try {
       const base = `http://127.0.0.1:${server.port}`;
       const headers = { 'X-DSH-Pet-Token': security.token, 'Content-Type': 'application/json' };
       const shell = await fetch(base + '/standalone-ai/');
       assert.equal(shell.status, 200);
       assert.match(shell.headers.get('content-security-policy') ?? '', /default-src 'none'/);
+      assert.match(shell.headers.get('content-security-policy') ?? '', /media-src 'self'/, '试听要能加载音频');
       assert.doesNotMatch(await shell.text(), new RegExp(security.token));
       assert.equal((await fetch(base + '/standalone-ai/settings')).status, 403);
       const read = await fetch(base + '/standalone-ai/settings', { headers });
@@ -394,6 +400,26 @@ describe('HTTP boundary protects every route and settings', () => {
       const testRes = await fetch(base + '/standalone-ai/test', { method: 'POST', headers, body: '{}' });
       assert.equal(testRes.status, 200);
       assert.deepEqual(await testRes.json(), { ok: true, message: '连接成功', reply: 'pong' });
+      // 语音试听：与测试连接同一套令牌/方法口径；表单里未保存的音色/语速要原样传到底层
+      assert.equal((await fetch(base + '/standalone-ai/tts/test')).status, 403);
+      assert.equal((await fetch(base + '/standalone-ai/tts/test', { headers })).status, 405);
+      const ttsRes = await fetch(base + '/standalone-ai/tts/test', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ voice: 'zh-CN-XiaoyiNeural', rate: 10 }),
+      });
+      assert.equal(ttsRes.status, 200);
+      assert.deepEqual(await ttsRes.json(), {
+        ok: true,
+        message: '合成成功',
+        url: '/dsh-pet-7340/tts/x.mp3',
+        text: '试听文本',
+      });
+      assert.deepEqual(ttsInput, { voice: 'zh-CN-XiaoyiNeural', rate: 10 });
+      assert.equal(
+        (await fetch(base + '/standalone-ai/tts/test', { method: 'POST', headers, body: '{broken' })).status,
+        400,
+      );
       let last = 0;
       for (let i = 0; i < 25; i++)
         last = (await fetch(base + '/standalone-ai/settings', { method: 'POST', headers, body: '{}' })).status;

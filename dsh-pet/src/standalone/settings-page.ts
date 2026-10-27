@@ -30,6 +30,7 @@ export const settingsPage = `<!doctype html>
 <div class="pair"><div><label for="ttsVoice">音色</label><select id="ttsVoice"><option value="zh-CN-XiaoxiaoNeural">晓晓 · 女声（温暖）</option><option value="zh-CN-XiaoyiNeural">晓伊 · 女声（活泼）</option><option value="zh-CN-YunxiNeural">云希 · 男声（阳光）</option><option value="zh-CN-YunyangNeural">云扬 · 男声（专业）</option><option value="zh-CN-YunxiaNeural">云夏 · 男声（可爱）</option><option value="zh-CN-YunjianNeural">云健 · 男声（激情）</option></select></div>
 <div><label for="ttsRate">语速（-50 ~ 100）</label><input id="ttsRate" type="number" min="-50" max="100" step="5" value="0" required></div></div>
 <p class="hint">语速 0 = 正常，负数更慢，正数更快。</p>
+<div class="test-row"><button id="tts-test-btn" type="button">试听</button><span id="tts-test-result" class="test-result" role="status" aria-live="polite"></span></div>
 </fieldset>
 <fieldset><legend>对话与历史</legend>
 <label for="persona">人格提示词</label><textarea id="persona" name="persona" rows="4" maxlength="4000" spellcheck="false" placeholder="例如：你是主人的桌面小助手，说话简洁、先给结论。留空则使用桌宠配置里的 whisperPrompt。"></textarea>
@@ -47,7 +48,7 @@ export const settingsStyle = `
 *{box-sizing:border-box}body{margin:0;background:var(--water);color:var(--ink);font:16px/1.6 "Microsoft YaHei UI","PingFang SC",sans-serif}
 main{max-width:720px;margin:48px auto;padding:0 24px 32px}header{padding:0 12px 28px}.fish{display:block;font:700 29px/1.3 Georgia,serif;color:var(--blue);letter-spacing:2px;margin-bottom:24px}.local{font-size:13px;color:var(--muted);margin:0 0 10px}h1{font-size:32px;line-height:1.3;letter-spacing:-1px;margin:0 0 16px;font-weight:700}.intro{margin:0;color:var(--muted)}
 form{background:var(--paper);border:1px solid var(--line);border-radius:16px 16px 6px 6px;padding:28px 32px 20px}fieldset{padding:0 0 28px;margin:0 0 24px;border:0;border-bottom:1px solid var(--line);min-width:0}legend{font-size:19px;font-weight:700;margin-bottom:18px;padding:0}label{display:block;font-weight:600;font-size:14px;margin:14px 0 6px}input:not([type=checkbox]),select{display:block;width:100%;min-height:44px;border:1px solid #a5bdcb;border-radius:6px;background:#fff;color:var(--ink);padding:9px 12px;font:inherit;font-size:15px}input::placeholder{color:#6a7e8b}input[type=checkbox]{accent-color:var(--blue);width:18px;height:18px;flex-shrink:0;margin:0}.check{display:flex;align-items:center;gap:10px;min-height:32px;cursor:pointer}.enabled{margin-top:24px}.clear{font-weight:400;color:var(--muted);font-size:13px}.hint{font-size:12px;line-height:1.6;color:var(--muted);margin:7px 0 0}.key-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px}.key-heading label{margin:0 0 6px}.key-heading .hint{margin:0 0 6px}.notice{font-size:13px;color:#704b13;background:#fff7e7;border-left:3px solid #c18e36;margin:12px 0 16px;padding:12px 14px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:20px}footer{display:flex;align-items:center;justify-content:space-between;gap:18px}footer p{font-size:12px;color:var(--muted);margin:0}button{border:0;border-radius:7px;min-height:44px;padding:10px 20px;background:var(--blue);color:#fff;font:600 15px/1.5 inherit;white-space:nowrap;cursor:pointer}button:hover{background:#0b4e73}button:disabled{opacity:.55;cursor:wait}:focus-visible{outline:3px solid #3a94c4;outline-offset:3px}#status{font-size:13px;min-height:24px;margin:18px 0 0;color:var(--blue)}#status[data-error=true]{color:#a13b30}
-.test-row{display:flex;align-items:center;gap:14px;margin:20px 0 6px;flex-wrap:wrap}#test-btn{background:#fff;color:var(--blue);border:1.5px solid var(--blue);min-height:38px;padding:6px 18px;font-size:14px;border-radius:6px;cursor:pointer;font-weight:600}#test-btn:hover{background:#edf5fa}#test-btn:disabled{opacity:.6;cursor:wait}.test-result{font-size:13px;line-height:1.5;min-height:22px;flex:1 1 200px}.test-success{color:#1a7f37;font-weight:600}.test-error{color:#cf222e}.reply-preview{display:block;color:var(--muted);font-weight:normal;font-size:12px;margin-top:4px;word-break:break-all}
+.test-row{display:flex;align-items:center;gap:14px;margin:20px 0 6px;flex-wrap:wrap}#test-btn{background:#fff;color:var(--blue);border:1.5px solid var(--blue);min-height:38px;padding:6px 18px;font-size:14px;border-radius:6px;cursor:pointer;font-weight:600}#test-btn:hover{background:#edf5fa}#test-btn:disabled{opacity:.6;cursor:wait}#tts-test-btn{background:#fff;color:var(--blue);border:1.5px solid var(--blue);min-height:38px;padding:6px 18px;font-size:14px;border-radius:6px;cursor:pointer;font-weight:600}#tts-test-btn:hover{background:#edf5fa}#tts-test-btn:disabled{opacity:.6;cursor:wait}.test-result{font-size:13px;line-height:1.5;min-height:22px;flex:1 1 200px}.test-success{color:#1a7f37;font-weight:600}.test-error{color:#cf222e}.reply-preview{display:block;color:var(--muted);font-weight:normal;font-size:12px;margin-top:4px;word-break:break-all}
 textarea{display:block;width:100%;min-height:104px;border:1px solid #a5bdcb;border-radius:6px;background:#fff;color:var(--ink);padding:10px 12px;font:inherit;font-size:15px;line-height:1.55;resize:vertical}
 textarea::placeholder{color:#6a7e8b}code{font:13px/1.5 ui-monospace,Consolas,monospace;background:#eef5f9;border:1px solid var(--line);border-radius:4px;padding:1px 6px;word-break:break-all}
 .history-row{display:flex;align-items:center;gap:12px;margin:20px 0 6px;flex-wrap:wrap}.history-row button{min-height:38px;padding:6px 18px;font-size:14px;border-radius:6px}
@@ -140,6 +141,42 @@ export const settingsScript = `
         testResult.textContent = '✗ 请求异常：' + (error && error.message ? error.message : String(error));
       } finally {
         testBtn.disabled = false;
+      }
+    });
+  }
+  const ttsTestBtn = get('tts-test-btn');
+  const ttsTestResult = get('tts-test-result');
+  let previewAudio = null;
+  if (ttsTestBtn && ttsTestResult) {
+    ttsTestBtn.addEventListener('click', async () => {
+      ttsTestBtn.disabled = true;
+      ttsTestResult.className = 'test-result';
+      ttsTestResult.textContent = '正在合成试听语音…';
+      try {
+        const response = await fetch('/standalone-ai/tts/test', {
+          method: 'POST',
+          credentials: 'omit',
+          cache: 'no-store',
+          headers: { 'X-DSH-Pet-Token': token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ voice: get('ttsVoice').value, rate: Number(get('ttsRate').value) }),
+        });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.message || data.error || '合成失败');
+        if (previewAudio) { previewAudio.pause(); previewAudio = null; }
+        previewAudio = new Audio(data.url);
+        ttsTestResult.className = 'test-result test-success';
+        ttsTestResult.textContent = '✓ 合成完成，正在播放…';
+        previewAudio.addEventListener('ended', () => { ttsTestResult.textContent = '✓ 试听完成'; });
+        previewAudio.addEventListener('error', () => {
+          ttsTestResult.className = 'test-result test-error';
+          ttsTestResult.textContent = '✗ 音频加载失败：请确认桌宠进程仍在运行，然后重试';
+        });
+        await previewAudio.play();
+      } catch (error) {
+        ttsTestResult.className = 'test-result test-error';
+        ttsTestResult.textContent = '✗ ' + (error && error.message ? error.message : String(error));
+      } finally {
+        ttsTestBtn.disabled = false;
       }
     });
   }
