@@ -88,7 +88,7 @@ dsh-pet 的宿主半侧向 DSH 自己的 Web 服务注册了**一条前缀路由
 | `GET /dsh-pet-7340/thumb/{petId}/{file}` | 动画素材（`.webm` / `.mov`，按宠物归属） |
 | `GET /dsh-pet-7340/font/{file}` | 字体文件 |
 | `GET /dsh-pet-7340/pic/{file}` | 通知图标（`pic/`）与表情包（`pic/memes/{素材根}/`，按宠物归属） |
-| `GET /dsh-pet-7340/tts/{file}` | 语音朗读的 mp3 缓存（文件名 = 文本/音色/语速的 sha1），供渲染端 `<audio>` 播放 |
+| `GET /dsh-pet-7340/tts/{file}` | 语音缓存（Edge 的 `.mp3` / 本机 GPT-SoVITS 的 `.wav`，文件名 = 文本+引擎+音色+语速的 sha1），供渲染端 `<audio>` 播放 |
 
 ## 八、工作状态（外部写入）
 

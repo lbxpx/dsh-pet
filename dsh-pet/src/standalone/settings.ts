@@ -13,7 +13,13 @@ export interface StandaloneSettingsService {
     apiKey?: string;
   }): Promise<{ ok: boolean; message: string; reply?: string }>;
   /** 语音试听（可选：老实现不提供时设置页明确报「尚未就绪」） */
-  testTts?(input?: { voice?: string; rate?: number }): Promise<{
+  testTts?(input?: {
+    voice?: string;
+    rate?: number;
+    provider?: 'edge' | 'local';
+    voiceId?: string;
+    localUrl?: string;
+  }): Promise<{
     ok: boolean;
     message: string;
     url?: string;
@@ -52,10 +58,36 @@ const settingsSchema = z
       .refine((s) => s.trim() === '' || s.trim().toLowerCase().endsWith('.json'), '历史文件必须是 .json')
       .optional(),
     speakEnabled: z.boolean().optional(),
+    ttsProvider: z.enum(['edge', 'local']).optional(),
     ttsVoice: z
       .string()
       .max(100)
       .refine((s) => /^[A-Za-z0-9-]+Neural$/.test(s), '音色名不合法')
+      .optional(),
+    ttsVoiceId: z
+      .string()
+      .max(80)
+      .refine((s) => s === '' || /^[A-Za-z0-9_-]+$/.test(s), '本机声线 id 不合法')
+      .optional(),
+    ttsLocalUrl: z
+      .string()
+      .max(2048)
+      .refine((s) => {
+        try {
+          const url = new URL(s);
+          return (
+            url.protocol === 'http:' &&
+            (url.hostname === '127.0.0.1' || url.hostname === 'localhost') &&
+            !url.username &&
+            !url.password &&
+            (url.pathname === '/' || url.pathname === '') &&
+            !url.search &&
+            !url.hash
+          );
+        } catch {
+          return false;
+        }
+      }, '本机声线地址只能是 http://127.0.0.1 或 http://localhost')
       .optional(),
     ttsRate: z.number().int().min(-50).max(100).optional(),
   })
@@ -79,7 +111,10 @@ const publicNames = [
   'persona',
   'historyPath',
   'speakEnabled',
+  'ttsProvider',
   'ttsVoice',
+  'ttsVoiceId',
+  'ttsLocalUrl',
   'ttsRate',
   'hasKey',
 ] as const;

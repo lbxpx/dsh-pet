@@ -42,6 +42,9 @@ export interface VoiceManifest {
   status: 'recording' | 'ready';
   clips: VoiceClipRecord[];
   ref?: string;
+  /** 参考音频来自哪一句（P3 合成时要把这句的文本当 prompt_text） */
+  refClipId?: number;
+  refText?: string;
 }
 
 export interface VoiceSessionSummary {
@@ -205,6 +208,8 @@ export function createVoiceStudio(voicesRoot: string, now: () => number = Date.n
       const chosen = ranked[0];
       await copyFile(join(dir, chosen.file), join(dir, 'ref.wav'));
       manifest.ref = 'ref.wav';
+      manifest.refClipId = chosen.id;
+      manifest.refText = chosen.text;
       manifest.status = 'ready';
       await writeManifest(join(dir, 'manifest.json'), manifest);
       return { ...summary(sessionId, dir, manifest), ref: 'ref.wav', manifest };

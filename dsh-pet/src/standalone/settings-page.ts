@@ -26,10 +26,13 @@ export const settingsPage = `<!doctype html>
 </fieldset>
 <fieldset><legend>语音朗读</legend>
 <label class="check"><input id="speakEnabled" type="checkbox" aria-describedby="speak-note">朗读对话回复</label>
-<p class="hint" id="speak-note">用 Edge 神经语音朗读（需联网，文本会发送到微软合成），声音由网页或桌面窗口播放。首次使用需要本机装有 Python 的 edge-tts 组件。</p>
-<div class="pair"><div><label for="ttsVoice">音色</label><select id="ttsVoice"><option value="zh-CN-XiaoxiaoNeural">晓晓 · 女声（温暖）</option><option value="zh-CN-XiaoyiNeural">晓伊 · 女声（活泼）</option><option value="zh-CN-YunxiNeural">云希 · 男声（阳光）</option><option value="zh-CN-YunyangNeural">云扬 · 男声（专业）</option><option value="zh-CN-YunxiaNeural">云夏 · 男声（可爱）</option><option value="zh-CN-YunjianNeural">云健 · 男声（激情）</option></select></div>
+<p class="hint" id="speak-note">Edge 神经语音（需联网，文本会发送到微软）或本机 GPT-SoVITS 克隆声线；声音由网页或桌面窗口播放。本机声线不可用时自动回落 Edge。</p>
+<div class="pair"><div><label for="ttsProvider">朗读引擎</label><select id="ttsProvider"><option value="edge">Edge 神经语音</option><option value="local">本机声线（GPT-SoVITS）</option></select></div>
+<div><label for="ttsVoiceId">本机声线</label><select id="ttsVoiceId"><option value="">（没有可用的录制声线）</option></select></div></div>
+<div class="pair"><div><label for="ttsVoice">Edge 音色</label><select id="ttsVoice"><option value="zh-CN-XiaoxiaoNeural">晓晓 · 女声（温暖）</option><option value="zh-CN-XiaoyiNeural">晓伊 · 女声（活泼）</option><option value="zh-CN-YunxiNeural">云希 · 男声（阳光）</option><option value="zh-CN-YunyangNeural">云扬 · 男声（专业）</option><option value="zh-CN-YunxiaNeural">云夏 · 男声（可爱）</option><option value="zh-CN-YunjianNeural">云健 · 男声（激情）</option></select></div>
 <div><label for="ttsRate">语速（-50 ~ 100）</label><input id="ttsRate" type="number" min="-50" max="100" step="5" value="0" required></div></div>
-<p class="hint">语速 0 = 正常，负数更慢，正数更快。</p>
+<label for="ttsLocalUrl">本机声线服务地址</label><input id="ttsLocalUrl" maxlength="2048" spellcheck="false" placeholder="http://127.0.0.1:9880">
+<p class="hint">只支持本机 http 地址。启动 GPT-SoVITS 的 <code>api_v2.py</code> 后填它的端口；语速 0 = 正常，负数更慢，正数更快。</p>
 <div class="test-row"><button id="tts-test-btn" type="button">试听</button><span id="tts-test-result" class="test-result" role="status" aria-live="polite"></span></div>
 <div class="test-row"><button id="voice-wizard" type="button" class="secondary">打开录制向导</button><span class="hint">录制 40 句（约 6–10 分钟），生成可克隆的声线</span></div>
 </fieldset>
@@ -83,15 +86,48 @@ export const settingsScript = `
     }
     return response.json();
   }
+  let savedVoiceId = '';
   function populate(data) {
-    for (const id of ['protocol','baseUrl','model','whisperIntervalSec','maxTokens','persona','historyPath','ttsVoice','ttsRate']) {
+    for (const id of ['protocol','baseUrl','model','whisperIntervalSec','maxTokens','persona','historyPath','ttsProvider','ttsVoice','ttsLocalUrl','ttsRate']) {
       if (data[id] !== undefined) get(id).value = String(data[id]);
     }
     for (const id of ['enabled','automaticWhispers','speakEnabled']) get(id).checked = data[id] === true;
+    savedVoiceId = typeof data.ttsVoiceId === 'string' ? data.ttsVoiceId : '';
+    const voiceSelect = get('ttsVoiceId');
+    if (voiceSelect && savedVoiceId) voiceSelect.value = savedVoiceId;
     get('history-file').textContent = data.historyFile || '—';
     get('key-state').textContent = data.hasKey ? '已保存 · 不回显' : '尚未设置';
     get('apiKey').value = '';
     get('clearApiKey').checked = false;
+  }
+  function loadVoices() {
+    const select = get('ttsVoiceId');
+    // 老宿主/测试桩没有这套 DOM API：静默跳过，不影响设置页其余功能
+    if (!select || typeof select.replaceChildren !== 'function' || typeof document.createElement !== 'function') return;
+    fetch('/standalone-ai/voice/sessions', {
+      credentials: 'omit', cache: 'no-store', headers: { 'X-DSH-Pet-Token': token }
+    }).then(response => response.ok ? response.json() : null).then(data => {
+      const current = select.value || savedVoiceId;
+      const sessions = (data && data.sessions) || [];
+      select.replaceChildren();
+      const none = document.createElement('option');
+      none.value = ''; none.textContent = sessions.length ? '（不使用本机声线）' : '（没有可用的录制声线）';
+      select.appendChild(none);
+      for (const item of sessions) {
+        const option = document.createElement('option');
+        option.value = item.id;
+        option.textContent = item.name + '（' + item.recorded + '/' + item.total + '）';
+        select.appendChild(option);
+      }
+      if (current) {
+        select.value = current;
+        if (select.value !== current) {
+          const stale = document.createElement('option');
+          stale.value = current; stale.textContent = current + '（未找到）';
+          select.appendChild(stale); select.value = current;
+        }
+      }
+    }).catch(() => {});
   }
   get('clearApiKey').addEventListener('change', () => {
     get('apiKey').disabled = get('clearApiKey').checked;
@@ -159,7 +195,13 @@ export const settingsScript = `
           credentials: 'omit',
           cache: 'no-store',
           headers: { 'X-DSH-Pet-Token': token, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ voice: get('ttsVoice').value, rate: Number(get('ttsRate').value) }),
+          body: JSON.stringify({
+            provider: get('ttsProvider').value,
+            voice: get('ttsVoice').value,
+            voiceId: get('ttsVoiceId').value,
+            localUrl: get('ttsLocalUrl').value.trim(),
+            rate: Number(get('ttsRate').value)
+          }),
         });
         const data = await response.json();
         if (!data.ok) throw new Error(data.message || data.error || '合成失败');
@@ -248,7 +290,12 @@ export const settingsScript = `
       enabled: get('enabled').checked, automaticWhispers: get('automaticWhispers').checked,
       whisperIntervalSec: Number(get('whisperIntervalSec').value), maxTokens: Number(get('maxTokens').value),
       persona: get('persona').value, historyPath: get('historyPath').value.trim(),
-      speakEnabled: get('speakEnabled').checked, ttsVoice: get('ttsVoice').value, ttsRate: Number(get('ttsRate').value)
+      speakEnabled: get('speakEnabled').checked,
+      ttsProvider: get('ttsProvider').value,
+      ttsVoice: get('ttsVoice').value,
+      ttsVoiceId: get('ttsVoiceId').value,
+      ttsLocalUrl: get('ttsLocalUrl').value.trim(),
+      ttsRate: Number(get('ttsRate').value)
     };
     get('apiKey').value = '';
     try {
@@ -259,6 +306,7 @@ export const settingsScript = `
     finally { save.disabled = false; }
   });
   if (!token) { message('请从桌宠菜单或本机启动器打开设置，以获得本次运行的访问凭据。', true); return; }
+  loadVoices();
   request('GET').then(data => { populate(data); save.disabled = false; message('设置只在本机保存。'); })
     .catch(error => message(error.message, true));
 })();

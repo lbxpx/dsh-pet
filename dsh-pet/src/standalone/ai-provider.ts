@@ -5,7 +5,7 @@ import { createAiConfig } from './ai-config';
 import type { StandaloneAiPublicSettings } from './ai-config';
 import { isAuthenticationFailure, isRateLimitFailure, sdkTextStream } from './ai-transport';
 import type { AiFetch, AiRequest, AiTransportEvent } from './ai-transport';
-import { synthesize } from '../host/tts';
+import { synthesize, synthesizeRecorded } from '../host/tts';
 
 /** 语音试听的固定文本（短句：合成快、缓存命中后瞬时返回；重复点击不会再发微软请求） */
 export const TTS_TEST_TEXT = '你好呀，我是你的桌面宠物。听到这句话，就说明语音播放已经换成渲染端啦。';
@@ -65,8 +65,14 @@ export interface StandaloneAiService {
     model?: string;
     apiKey?: string;
   }): Promise<{ ok: boolean; message: string; reply?: string }>;
-  /** 设置页「试听」：用当前（或表单里未保存的）音色/语速合成一句固定话，返回可播放的宿主路径 */
-  testTts?(input?: { voice?: string; rate?: number }): Promise<{
+  /** 设置页「试听」：用当前（或表单里未保存的）引擎/音色/语速合成一句固定话，返回可播放的宿主路径 */
+  testTts?(input?: {
+    voice?: string;
+    rate?: number;
+    provider?: 'edge' | 'local';
+    voiceId?: string;
+    localUrl?: string;
+  }): Promise<{
     ok: boolean;
     message: string;
     url?: string;
@@ -286,7 +292,10 @@ export function createStandaloneAi(
         persona: '',
         historyPath: '',
         speakEnabled: false,
+        ttsProvider: 'edge' as const,
         ttsVoice: 'zh-CN-XiaoxiaoNeural',
+        ttsVoiceId: '',
+        ttsLocalUrl: 'http://127.0.0.1:9880',
         ttsRate: 0,
       };
 
@@ -335,22 +344,35 @@ export function createStandaloneAi(
         clearTimeout(timer);
       }
     },
-    async testTts(input?: { voice?: string; rate?: number }) {
+    async testTts(input?: {
+      voice?: string;
+      rate?: number;
+      provider?: 'edge' | 'local';
+      voiceId?: string;
+      localUrl?: string;
+    }) {
       if (disposed) return { ok: false, message: '服务已关闭' };
       const current = store.current();
-      // 表单里改了音色/语速还没保存也能试听：合法就用表单值，否则回落已保存值
+      // 表单里改了引擎/音色/语速还没保存也能试听：合法就用表单值，否则回落已保存值
       const voice =
         typeof input?.voice === 'string' && /^[A-Za-z0-9-]+Neural$/.test(input.voice) ? input.voice : current.ttsVoice;
       const rateInput = Number(input?.rate);
       const rate =
         Number.isFinite(rateInput) && rateInput >= -50 && rateInput <= 100 ? Math.round(rateInput) : current.ttsRate;
+      const provider = input?.provider === 'local' || input?.provider === 'edge' ? input.provider : current.ttsProvider;
+      const voiceId = typeof input?.voiceId === 'string' && input.voiceId ? input.voiceId : current.ttsVoiceId;
+      const localUrl = typeof input?.localUrl === 'string' && input.localUrl ? input.localUrl : current.ttsLocalUrl;
       try {
-        const file = await synthesize(TTS_TEST_TEXT, { userRoot: join(home, 'dsh-pet'), voice, rate });
+        // 试听要暴露真实原因，所以本机声线**不走 synthesizeVoice 的 Edge 回落**
+        const file =
+          provider === 'local'
+            ? await synthesizeRecorded(TTS_TEST_TEXT, { userRoot: join(home, 'dsh-pet'), voiceId, localUrl, rate })
+            : await synthesize(TTS_TEST_TEXT, { userRoot: join(home, 'dsh-pet'), voice, rate });
         if (!file) return { ok: false, message: '语音合成失败：没有生成音频文件' };
         // 与宿主 publishVoice 写进 voice 叶子的地址同一口径：同源路径，设置页直接给 <audio> 播
         return {
           ok: true,
-          message: '语音合成成功，正在播放',
+          message: provider === 'local' ? '本机声线合成成功，正在播放' : '语音合成成功，正在播放',
           url: `/dsh-pet-7340/tts/${basename(file)}`,
           text: TTS_TEST_TEXT,
         };

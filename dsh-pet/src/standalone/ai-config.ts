@@ -18,8 +18,14 @@ export interface StandaloneAiPublicSettings {
   historyPath: string;
   /** 是否朗读回复（Edge 神经语音） */
   speakEnabled: boolean;
+  /** 朗读引擎：edge = Edge 神经语音；local = 本机 GPT-SoVITS 克隆声线 */
+  ttsProvider: 'edge' | 'local';
   /** Edge 音色名 */
   ttsVoice: string;
+  /** 本机声线会话 id（P2 录制产物 voices/<id>） */
+  ttsVoiceId: string;
+  /** 本机 GPT-SoVITS API 地址（只允许本机 http） */
+  ttsLocalUrl: string;
   /** 语速百分比（-50 ~ +100） */
   ttsRate: number;
   hasKey: boolean;
@@ -39,7 +45,10 @@ export const DEFAULT_AI_SETTINGS: Readonly<StandaloneAiSettings> = Object.freeze
   persona: '',
   historyPath: '',
   speakEnabled: false,
+  ttsProvider: 'edge',
   ttsVoice: 'zh-CN-XiaoxiaoNeural',
+  ttsVoiceId: '',
+  ttsLocalUrl: 'http://127.0.0.1:9880',
   ttsRate: 0,
 });
 
@@ -52,6 +61,26 @@ function safeEndpoint(value: string): boolean {
       return false;
     }
     return ['http:', 'https:'].includes(url.protocol);
+  } catch {
+    return false;
+  }
+}
+
+/** 本机声线服务地址：只允许 http + 127.0.0.1/localhost（不把宠物宿主变成任意 URL 的代理） */
+function safeLocalEndpoint(value: string): boolean {
+  if (value === '') return false;
+  if (value !== value.trim() || /[\s\\]/.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'http:' &&
+      (url.hostname === '127.0.0.1' || url.hostname === 'localhost') &&
+      !url.username &&
+      !url.password &&
+      (url.pathname === '/' || url.pathname === '') &&
+      !url.search &&
+      !url.hash
+    );
   } catch {
     return false;
   }
@@ -88,10 +117,19 @@ const fields = {
     .refine((s) => !containsControlChar(s), '历史路径不能包含控制字符')
     .refine((s) => s.trim() === '' || s.trim().toLowerCase().endsWith('.json'), '历史文件必须是 .json'),
   speakEnabled: z.boolean(),
+  ttsProvider: z.enum(['edge', 'local']),
   ttsVoice: z
     .string()
     .max(100)
     .refine((s) => /^[A-Za-z0-9-]+Neural$/.test(s), '音色名不合法'),
+  ttsVoiceId: z
+    .string()
+    .max(80)
+    .refine((s) => s === '' || /^[A-Za-z0-9_-]+$/.test(s), '本机声线 id 不合法'),
+  ttsLocalUrl: z
+    .string()
+    .max(2048)
+    .refine(safeLocalEndpoint, '本机声线地址只能是 http://127.0.0.1 或 http://localhost'),
   ttsRate: z.number().int().min(-50).max(100),
   apiKey: z
     .string()

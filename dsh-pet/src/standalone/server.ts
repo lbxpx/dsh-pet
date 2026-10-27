@@ -180,14 +180,23 @@ function ttsTestHandler(
       rejectRequest(res, 400, '请求格式无效');
       return;
     }
-    const input = payload as { voice?: unknown; rate?: unknown };
+    const input = payload as {
+      voice?: unknown;
+      rate?: unknown;
+      provider?: unknown;
+      voiceId?: unknown;
+      localUrl?: unknown;
+    };
     sendJson(
       res,
       200,
       await ai.testTts({
-        // 表单里未保存的音色/语速也能试听；类型不对就交给上层回落已保存值
+        // 表单里未保存的引擎/音色/声线也能试听；类型不对就交给上层回落已保存值
         voice: typeof input.voice === 'string' ? input.voice : undefined,
         rate: typeof input.rate === 'number' && Number.isFinite(input.rate) ? input.rate : undefined,
+        provider: input.provider === 'local' || input.provider === 'edge' ? input.provider : undefined,
+        voiceId: typeof input.voiceId === 'string' ? input.voiceId : undefined,
+        localUrl: typeof input.localUrl === 'string' ? input.localUrl : undefined,
       }),
     );
   };

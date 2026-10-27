@@ -55,7 +55,7 @@ test('settings shell is accessible, self contained, and never saves browser secr
   assert.match(settingsScript, /history\.replaceState/);
   assert.match(settingsScript, /X-DSH-Pet-Token/);
   assert.doesNotMatch(settingsScript, /localStorage|sessionStorage|document\.cookie|innerHTML/);
-  assert.doesNotMatch(settingsPage, /https?:\/\/(?!example)/);
+  assert.doesNotMatch(settingsPage, /https?:\/\/(?!(example|127\.0\.0\.1|localhost))/);
   assert.match(settingsStyle, /focus-visible/);
 });
 

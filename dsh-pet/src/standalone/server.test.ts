@@ -381,7 +381,7 @@ describe('HTTP boundary protects every route and settings', () => {
       },
     };
     const server = await listenStandaloneServer({ port: 0, security, logger: silent, routes: [], ai });
-    let ttsInput: { voice?: string; rate?: number } | undefined;
+    let ttsInput: { voice?: string; rate?: number; provider?: string; voiceId?: string; localUrl?: string } | undefined;
     try {
       const base = `http://127.0.0.1:${server.port}`;
       const headers = { 'X-DSH-Pet-Token': security.token, 'Content-Type': 'application/json' };
@@ -445,7 +445,11 @@ describe('HTTP boundary protects every route and settings', () => {
         url: '/dsh-pet-7340/tts/x.mp3',
         text: '试听文本',
       });
-      assert.deepEqual(ttsInput, { voice: 'zh-CN-XiaoyiNeural', rate: 10 });
+      assert.equal(ttsInput?.voice, 'zh-CN-XiaoyiNeural');
+      assert.equal(ttsInput?.rate, 10);
+      assert.equal(ttsInput?.provider, undefined);
+      assert.equal(ttsInput?.voiceId, undefined);
+      assert.equal(ttsInput?.localUrl, undefined);
       assert.equal(
         (await fetch(base + '/standalone-ai/tts/test', { method: 'POST', headers, body: '{broken' })).status,
         400,

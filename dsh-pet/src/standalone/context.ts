@@ -48,7 +48,16 @@ export interface StandaloneModelService {
   stream(options: unknown): AsyncIterable<unknown>;
   isReady(): boolean;
   canWhisper(): boolean;
-  getSettings(): { whisperIntervalSec: number; persona: string; speakEnabled: boolean; ttsVoice: string; ttsRate: number };
+  getSettings(): {
+    whisperIntervalSec: number;
+    persona: string;
+    speakEnabled: boolean;
+    ttsProvider: 'edge' | 'local';
+    ttsVoice: string;
+    ttsVoiceId: string;
+    ttsLocalUrl: string;
+    ttsRate: number;
+  };
   /** 解析后的对话历史文件绝对路径（独立模式：AI 设置 historyPath / 默认 memory.json） */
   historyFilePath(): string;
   dispose(): void;
@@ -157,7 +166,10 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
               const settings = ai.getSettings();
               return {
                 enabled: settings.speakEnabled,
+                provider: settings.ttsProvider,
                 voice: settings.ttsVoice,
+                voiceId: settings.ttsVoiceId,
+                localUrl: settings.ttsLocalUrl,
                 rate: settings.ttsRate,
               };
             },

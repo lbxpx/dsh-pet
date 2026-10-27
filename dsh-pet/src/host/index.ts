@@ -118,7 +118,7 @@ import { decideAnim } from './anim';
 import { LockStore } from './lock';
 import { MENU_WAIT_MAX_MS, MenuRegistry } from './menu';
 import { decidePosition, decideThrow, positionLeafData } from './motion-cue';
-import { synthesize, ttsCacheDir } from './tts';
+import { synthesizeVoice, ttsCacheDir } from './tts';
 import { voiceSurface } from './voice-target';
 import { parsePlaybackPath, parseWaitQuery, PlaybackStore } from './playback';
 import { PoseStore, normalizePoseInput } from './pose';
@@ -204,6 +204,7 @@ const MIME: Record<string, string> = {
   '.mp4': 'video/mp4',
   '.png': 'image/png',
   '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
   '.json': 'application/json; charset=utf-8',
   '.jsonc': 'application/json; charset=utf-8',
   '.ttf': 'font/ttf',
@@ -756,10 +757,23 @@ export function apply(ctx: any): void {
     petId: string,
     display: unknown,
     text: string,
-    tts: { voice: string; rate: number },
+    tts: {
+      provider?: 'edge' | 'local';
+      voice: string;
+      voiceId?: string;
+      localUrl?: string;
+      rate: number;
+    },
   ): Promise<void> => {
     try {
-      const file = await synthesize(text, { userRoot, voice: tts.voice, rate: tts.rate });
+      const file = await synthesizeVoice(text, {
+        userRoot,
+        provider: tts.provider,
+        voice: tts.voice,
+        voiceId: tts.voiceId,
+        localUrl: tts.localUrl,
+        rate: tts.rate,
+      });
       if (!file) return;
       // 桌面 Helper 可能没起来（首次下载 / 崩溃熔断）：这时网页端才是唯一渲染端。
       // surface=null = 两端都不显示这只宠物（display=desktop/none 且桌面没在跑）：不写叶子，
@@ -826,7 +840,10 @@ export function apply(ctx: any): void {
     const tts = ctx.standaloneAi?.tts?.();
     if (tts?.enabled === true) {
       void publishVoice(petId, found.pet.display, result.text, {
+        provider: tts.provider === 'local' ? 'local' : 'edge',
         voice: String(tts.voice ?? 'zh-CN-XiaoxiaoNeural'),
+        voiceId: typeof tts.voiceId === 'string' ? tts.voiceId : '',
+        localUrl: typeof tts.localUrl === 'string' ? tts.localUrl : undefined,
         rate: Number(tts.rate ?? 0),
       });
     }
@@ -891,7 +908,10 @@ export function apply(ctx: any): void {
       const tts = ctx.standaloneAi?.tts?.();
       if (tts?.enabled === true) {
         void publishVoice(petId, found.pet.display, generated.text, {
+          provider: tts.provider === 'local' ? 'local' : 'edge',
           voice: String(tts.voice ?? 'zh-CN-XiaoxiaoNeural'),
+          voiceId: typeof tts.voiceId === 'string' ? tts.voiceId : '',
+          localUrl: typeof tts.localUrl === 'string' ? tts.localUrl : undefined,
           rate: Number(tts.rate ?? 0),
         });
       }
@@ -2257,18 +2277,20 @@ export function apply(ctx: any): void {
       return { kind: 'file', file: picFile, contentType: MIME[ext] ?? 'application/octet-stream' };
     }
 
-    // 语音缓存：/dsh-pet-7340/tts/<sha1>.mp3 → <userRoot>/tts（edge-tts 的合成产物）。
+    // 语音缓存：/dsh-pet-7340/tts/<sha1>.(mp3|wav) → <userRoot>/tts（Edge 的 mp3 / 本机声线的 wav）。
     // 渲染端的 <audio> 来取它——播放已经改到渲染端，宿主不再自己出声（见 publishVoice）。
-    // 只认缓存文件名的形状（40 位 sha1 + .mp3）：目录里虽然只有合成结果，也不在这里开一个
+    // 只认缓存文件名的形状（40 位 sha1 + 扩展名）：目录里虽然只有合成结果，也不在这里开一个
     // "按名字读目录"的通用文件服务；段数、点段、分隔符一律进不了拼接。
     // 文件不存在 → 404 文本（与 thumb/pic 的显式失败口径一致），而不是空 200。
     if (scope === 'tts') {
       const name = restParts.join('/');
-      if (!/^[0-9a-f]{40}\.mp3$/.test(name)) return { kind: 'text', status: 404, body: 'dsh-pet: voice not found' };
+      if (!/^[0-9a-f]{40}\.(mp3|wav)$/.test(name))
+        return { kind: 'text', status: 404, body: 'dsh-pet: voice not found' };
       // 读目录用纯路径版：GET 不该因为一个不存在的声音而 mkdir（合成路径自己会建）
       const voiceFile = resolveExisting(ttsCacheDir(userRoot), name);
       if (voiceFile === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: voice not found' };
-      return { kind: 'file', file: voiceFile, contentType: MIME['.mp3'] };
+      const ext = name.slice(name.lastIndexOf('.')).toLowerCase();
+      return { kind: 'file', file: voiceFile, contentType: MIME[ext] ?? 'application/octet-stream' };
     }
 
     if (scope !== 'thumb') {
