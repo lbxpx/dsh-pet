@@ -66,14 +66,17 @@ export async function synthesize(text: string, options: SpeakOptions): Promise<s
 export function play(file: string): void {
   if (process.platform !== 'win32') return;
   const uri = `file:///${file.replace(/\\/g, '/')}`;
+  // WinRT MediaPlayer 走 Media Foundation，后台进程也能出声；WPF MediaPlayer 在无消息泵的
+  // 子进程里只走时钟、不出声（实测），WMP COM 在 Win11 上又打不开文件（playState 恒 9）。
   const script = [
-    'Add-Type -AssemblyName PresentationCore',
-    '$p = New-Object System.Windows.Media.MediaPlayer',
-    `$p.Open([uri]'${uri}')`,
-    'Start-Sleep -Milliseconds 700',
-    '$p.Play()',
-    'for ($i = 0; $i -lt 240; $i++) { Start-Sleep -Milliseconds 250; if ($p.NaturalDuration.HasTimeSpan -and $p.Position -ge $p.NaturalDuration.TimeSpan) { break } }',
-    '$p.Close()',
+    '[Windows.Media.Playback.MediaPlayer,Windows.Media,ContentType=WindowsRuntime] | Out-Null',
+    '[Windows.Media.Core.MediaSource,Windows.Media,ContentType=WindowsRuntime] | Out-Null',
+    '$mp = New-Object Windows.Media.Playback.MediaPlayer',
+    `$mp.Source = [Windows.Media.Core.MediaSource]::CreateFromUri([uri]'${uri}')`,
+    '$mp.Play()',
+    '$i = 0',
+    'while ($i -lt 600) { Start-Sleep -Milliseconds 250; $i++; $s = $mp.PlaybackSession; if ($s.NaturalDuration.TotalSeconds -gt 0 -and $s.Position -ge $s.NaturalDuration) { break } }',
+    '$mp.Dispose()',
   ].join('; ');
   try {
     spawn('powershell.exe', ['-STA', '-NoProfile', '-WindowStyle', 'Hidden', '-Command', script], {
