@@ -319,6 +319,64 @@ function applySayLeaf(petId, leaf) {
   }
 }
 
+// ---------- 语音播报（播放已经在渲染端）----------
+// 宿主只负责用 edge-tts 合成，并把地址写进 pets.<id>.voice；本窗口收到后自己用 HTMLAudioElement 播。
+// 与浏览器端 src/client/voice.ts 同一套语义：顺序队列、surface=web 的不抢、播完/失败自动下一条。
+// 桌面窗口不需要跨窗口选主：每窗口只装一只宠物，按 petId 命中即可（见 applyVoiceLeaf）。
+const VOICE_QUEUE_MAX = 3;
+let voiceQueue = [];
+let voiceAudio = null;
+let voicePlaying = false;
+
+/** 播下一条（没有在播时才动；ended/error 回调会再进这里） */
+function nextVoice() {
+  if (voicePlaying || voiceQueue.length === 0) return;
+  voicePlaying = true;
+  if (!voiceAudio) {
+    voiceAudio = new Audio();
+    voiceAudio.preload = 'auto';
+    voiceAudio.addEventListener('playing', () => {
+      window.__dshPetDebug.lastVoicePlayed = true;
+    });
+    voiceAudio.addEventListener('ended', () => {
+      voicePlaying = false;
+      nextVoice();
+    });
+    // 404 / 解码失败：跳过这条，继续下一条——不能让一条坏语音把整条队列卡死
+    voiceAudio.addEventListener('error', () => {
+      window.__dshPetDebug.lastVoiceError = 'media error: ' + voiceAudio.src;
+      voicePlaying = false;
+      nextVoice();
+    });
+  }
+  // 语音叶子里的地址是完整宿主路径（/dsh-pet-7340/tts/<sha1>.mp3）：换成本窗口的取源方式
+  voiceAudio.src = ROUTE_ORIGIN + voiceQueue.shift();
+  // main.js 已设 autoplay-policy=no-user-gesture-required，正常情况下 play() 直接兑现；
+  // 失败只影响这段声音，日志留给排障
+  const started = voiceAudio.play();
+  if (started && typeof started.catch === 'function') {
+    started.catch((e) => {
+      window.__dshPetDebug.lastVoiceError = String((e && e.message) || e);
+      voicePlaying = false;
+      voiceQueue = [];
+      console.error('[dsh-pet] 桌面语音播放失败：' + String((e && e.message) || e));
+    });
+  }
+}
+
+/** 语音叶子 → 本窗口的宠物播这段语音（宿主合成完成后写入；与气泡是两条独立叶子）。
+ *  `surface: 'web'` = 这段归网页端（桌面 Helper 不在跑时宿主会这么写），桌面窗口不抢；
+ *  本窗口没有这只宠物（多窗口时每窗一只）也不播——否则同一句会被所有桌面窗口各播一遍。 */
+function applyVoiceLeaf(petId, leaf) {
+  const cue = S.readVoice(leaf);
+  if (!cue || cue.surface === 'web') return;
+  if (!sprites.some((s) => s.pet.id === petId)) return;
+  window.__dshPetDebug.lastVoiceUrl = cue.url;
+  voiceQueue.push(cue.url);
+  if (voiceQueue.length > VOICE_QUEUE_MAX) voiceQueue.shift();
+  nextVoice();
+}
+
 /** 工作状态叶子 → 各宠物切档位动画 + 气泡（含回到空闲：state=null 用于收起常驻气泡） */
 function applyWorkStatusLeaf(leaf) {
   const snap = S.toWorkStatus(leaf.data);
@@ -415,6 +473,9 @@ async function pollStateOnce() {
       else if (change.path.startsWith('pets.') && change.path.endsWith('.say')) {
         // 宠物 id **允许含点号**：按前缀/后缀切片，绝不 split('.')
         applySayLeaf(change.path.slice('pets.'.length, -'.say'.length), change.leaf);
+      } else if (change.path.startsWith('pets.') && change.path.endsWith('.voice')) {
+        // 语音叶子：宿主合成完成后写入，播放交给本窗口（surface 决定桌面/网页谁播）
+        applyVoiceLeaf(change.path.slice('pets.'.length, -'.voice'.length), change.leaf);
       } else if (change.path.startsWith('pets.') && change.path.endsWith('.anim')) {
         // 点播动画：同样按前缀/后缀切片（counter 每次写入都递增，连点两次也会分发两次）
         applyAnimLeaf(change.path.slice('pets.'.length, -'.anim'.length), change.leaf);

@@ -88,6 +88,7 @@ dsh-pet 的宿主半侧向 DSH 自己的 Web 服务注册了**一条前缀路由
 | `GET /dsh-pet-7340/thumb/{petId}/{file}` | 动画素材（`.webm` / `.mov`，按宠物归属） |
 | `GET /dsh-pet-7340/font/{file}` | 字体文件 |
 | `GET /dsh-pet-7340/pic/{file}` | 通知图标（`pic/`）与表情包（`pic/memes/{素材根}/`，按宠物归属） |
+| `GET /dsh-pet-7340/tts/{file}` | 语音朗读的 mp3 缓存（文件名 = 文本/音色/语速的 sha1），供渲染端 `<audio>` 播放 |
 
 ## 八、工作状态（外部写入）
 
@@ -109,12 +110,16 @@ dsh-pet 的宿主半侧向 DSH 自己的 Web 服务注册了**一条前缀路由
     "balance": {…}, "workStatus": {…}, "notify": {…}, "config": {…}
   },
   "pets": {                   // 每只宠物各自一份；键是宠物 id（可含点号，勿切分）
-    "main": { "say": {…}, "anim": {…}, "position": {…}, "throw": {…}, "lock": {…} }
+    "main": { "say": {…}, "voice": {…}, "anim": {…}, "position": {…}, "throw": {…}, "lock": {…} }
   }
 }
 ```
 
 每个 `{…}` 是一个叶子 `{ counter, data }`：**`counter` 变了就表示它更新了**（唯一判据）。
+
+`voice` 是宿主写给渲染端的**内部指令**（语音合成完成后写入）：`{ url, surface }`，`surface` 决定
+桌面窗口还是网页端负责出声（`display: both` 时两端都在渲染，不区分就会双重出声）。第三方不需要、
+也没有入口写它；语音只有在 AI 设置里打开「朗读对话回复」时才会产生。
 
 **长轮询**：`?since=<上次的顶层 counter>&timeout=<ms>`（成对必填，上限 10s）。有字段改变就
 **立刻返回**，否则一直挂到 `timeout` 到点；返回体与不带参数时一样。

@@ -20,6 +20,7 @@ import {
   readPosition,
   readSay,
   readThrow,
+  readVoice,
   takeChanged,
   type PollState,
 } from './state.ts';
@@ -317,6 +318,35 @@ describe('readSay —— 说话叶子（弹气泡 / 清空 两种形态）', () 
     assert.equal(readSay({ counter: 1, data: 'nope' }), null);
     assert.equal(readSay({ counter: 1, data: {} }), null);
     assert.equal(readSay({ counter: 1, data: { text: 42 } }), null);
+  });
+});
+
+describe('readVoice —— 语音叶子（宿主路径 + 哪一端播）', () => {
+  const URL = '/dsh-pet-7340/tts/0123456789abcdef0123456789abcdef01234567.mp3';
+
+  test('url + surface=desktop 原样带出（both 宠物交给桌面窗口播）', () => {
+    assert.deepEqual(readVoice({ counter: 1, data: { url: URL, surface: 'desktop' } }), {
+      url: URL,
+      surface: 'desktop',
+    });
+  });
+
+  test('surface 缺失 / 非法 → web（老宿主或脏值都按网页端播，不丢这一句）', () => {
+    assert.equal(readVoice({ counter: 1, data: { url: URL } })?.surface, 'web');
+    assert.equal(readVoice({ counter: 1, data: { url: URL, surface: 'DESKTOP' } })?.surface, 'web');
+    assert.equal(readVoice({ counter: 1, data: { url: URL, surface: 1 } })?.surface, 'web');
+  });
+
+  test('只认宿主路径：完整 URL / 相对路径 / 空串 / 非字符串 → null（不让渲染端去访问来源不明的地址）', () => {
+    for (const url of ['https://evil.example/x.mp3', 'dsh-pet-7340/tts/x.mp3', '', 42, null, undefined]) {
+      assert.equal(readVoice({ counter: 1, data: { url } }), null, `url=${JSON.stringify(url)} 应拒绝`);
+    }
+  });
+
+  test('脏叶子 → null（不抛，消费端跳过这一拍）', () => {
+    assert.equal(readVoice({ counter: 1, data: null }), null);
+    assert.equal(readVoice({ counter: 1, data: 'nope' }), null);
+    assert.equal(readVoice({ counter: 1, data: {} }), null);
   });
 });
 

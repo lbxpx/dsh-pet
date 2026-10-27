@@ -140,8 +140,11 @@ applyDeskGeometry({
   topInsetRatio: CONFIG.topInsetRatio,
 });
 const ORIGIN = new URL(CONFIG.configUrl).origin;
+/** 宿主 / 协议原点（**不带** /dsh-pet-7340 前缀）：渲染端拿到的资源地址可能是完整宿主路径
+ *  （如语音叶子里的 `/dsh-pet-7340/tts/<sha1>.mp3`），拼它即可换成本窗口的取源方式 */
+const ROUTE_ORIGIN = BRIDGE ? 'dsh-pet-bridge://dsh-pet' : ORIGIN;
 /** 宿主 /dsh-pet-7340 前缀：bridge 走自定义 scheme（主进程转发），否则 HTTP 直连宿主 */
-const BASE = BRIDGE ? 'dsh-pet-bridge://dsh-pet/dsh-pet-7340' : ORIGIN + '/dsh-pet-7340';
+const BASE = ROUTE_ORIGIN + '/dsh-pet-7340';
 const STATE_URL = BASE + '/state'; // 轮询统一状态 S：前端 1s 轮询的唯一数据源（余额/工作状态/通知/说话）
 const BALANCE_URL = BASE + '/balance'; // 余额刷新动作（POST，写 S；数据本身从 /state 读）
 const WHISPER_URL = BASE + '/whisper';
@@ -184,6 +187,10 @@ window.__dshPetDebug = {
   menuOpen: false,
   chatOpen: false,
   bootAt: Date.now(),
+  // 语音（冒烟/排障）：最近一条收到的地址、是否真的开始出声、失败原因（成功路径不该有值）
+  lastVoiceUrl: '',
+  lastVoicePlayed: false,
+  lastVoiceError: '',
 };
 window.addEventListener('error', (event) => {
   window.__dshPetDebug.errors.push(String(event.message || event.error));

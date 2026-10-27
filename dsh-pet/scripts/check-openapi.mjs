@@ -88,7 +88,7 @@ ok.push(`${Object.keys(doc.paths).length} 条路径 / ${ops} 个操作`);
 // 所以两边都归一化成「一级段」（config/meta → config）再比对，否则会误报。
 const host = readFileSync(HOST_SRC, 'utf8');
 const implemented = new Set([...host.matchAll(/rest === '([^']+)'/g)].map((m) => m[1].split('/')[0]));
-for (const s of ['font', 'pic', 'thumb']) implemented.add(s);
+for (const s of ['font', 'pic', 'thumb', 'tts']) implemented.add(s);
 const documented = new Set();
 for (const p of Object.keys(doc.paths)) {
   const seg = p.slice('/dsh-pet-7340/'.length).split('/')[0];

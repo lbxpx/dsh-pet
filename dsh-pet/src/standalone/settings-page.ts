@@ -26,7 +26,7 @@ export const settingsPage = `<!doctype html>
 </fieldset>
 <fieldset><legend>语音朗读</legend>
 <label class="check"><input id="speakEnabled" type="checkbox" aria-describedby="speak-note">朗读对话回复</label>
-<p class="hint" id="speak-note">用 Edge 神经语音朗读（需联网，文本会发送到微软合成）。首次使用需要本机装有 Python 的 edge-tts 组件。</p>
+<p class="hint" id="speak-note">用 Edge 神经语音朗读（需联网，文本会发送到微软合成），声音由网页或桌面窗口播放。首次使用需要本机装有 Python 的 edge-tts 组件。</p>
 <div class="pair"><div><label for="ttsVoice">音色</label><select id="ttsVoice"><option value="zh-CN-XiaoxiaoNeural">晓晓 · 女声（温暖）</option><option value="zh-CN-XiaoyiNeural">晓伊 · 女声（活泼）</option><option value="zh-CN-YunxiNeural">云希 · 男声（阳光）</option><option value="zh-CN-YunyangNeural">云扬 · 男声（专业）</option><option value="zh-CN-YunxiaNeural">云夏 · 男声（可爱）</option><option value="zh-CN-YunjianNeural">云健 · 男声（激情）</option></select></div>
 <div><label for="ttsRate">语速（-50 ~ 100）</label><input id="ttsRate" type="number" min="-50" max="100" step="5" value="0" required></div></div>
 <p class="hint">语速 0 = 正常，负数更慢，正数更快。</p>

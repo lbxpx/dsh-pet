@@ -181,6 +181,34 @@ export function readSay(leaf: StateLeaf): SayCue | null {
 }
 
 /**
+ * 语音指令（`pets.<id>.voice`）：一段**已经合成好**的语音，交给渲染端播放。
+ *
+ * 为什么单独一个叶子而不是塞进 `say`：合成要跑 Python（edge-tts，通常 1 秒起），而气泡必须
+ * **立刻**出现。宿主先写 `say`，语音合成完再写 `voice`——气泡不等合成，语音晚一步到；两条叶子
+ * 各自 counter，互不重复触发（塞进 say 会让后到的语音把气泡重新弹一遍）。
+ *
+ * `url` 是**宿主路径**（`/dsh-pet-7340/tts/<sha1>.mp3`）：网页端直接当同源地址用，桌面窗口
+ * 拼到自己的 bridge/HTTP 源上（见 runtime/electron-helper 的 ROUTE_ORIGIN）。只接受以 `/` 开头的
+ * 路径——这条叶子是宿主独占通道，不接受第三方塞完整地址（否则桌面渲染进程会被指去访问任意 URL）。
+ *
+ * `surface` 决定**哪一端播**：`desktop` = 桌面窗口（宿主判定桌面 Helper 在跑），`web`（或缺省）
+ * = 网页端。两端都可能渲染同一只宠物（display=both），全靠这一位避免双重出声；
+ * 老宿主不写这个字段 → 按 web 处理。
+ */
+export type VoiceCue = { url: string; surface: 'desktop' | 'web' };
+
+/**
+ * 类型收窄：语音叶子 → `VoiceCue`（形状非法 → null，消费端跳过这一拍）。
+ * 空串 / 非 `/` 开头的地址一律拒绝：宁可这条不播，也不让渲染端去加载一个来源不明的地址。
+ */
+export function readVoice(leaf: StateLeaf): VoiceCue | null {
+  if (!leaf.data || typeof leaf.data !== 'object') return null;
+  const d = leaf.data as { url?: unknown; surface?: unknown };
+  if (typeof d.url !== 'string' || !d.url.startsWith('/')) return null;
+  return { url: d.url, surface: d.surface === 'desktop' ? 'desktop' : 'web' };
+}
+
+/**
  * 类型收窄：工作状态叶子 → 快照（形状非法 → null，消费端跳过这一拍）。
  * 与余额不同，这里没有"手动"标记：工作状态永远由 DSH 事件驱动，没有用户主动要的那条路。
  */

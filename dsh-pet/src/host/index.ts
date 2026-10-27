@@ -97,7 +97,7 @@ import { createReadStream, existsSync, fstatSync, readFileSync } from 'node:fs';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
-import { dirname, join, normalize, resolve, sep } from 'node:path';
+import { basename, dirname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
@@ -118,7 +118,8 @@ import { decideAnim } from './anim';
 import { LockStore } from './lock';
 import { MENU_WAIT_MAX_MS, MenuRegistry } from './menu';
 import { decidePosition, decideThrow, positionLeafData } from './motion-cue';
-import { speak } from './tts';
+import { synthesize, ttsCacheDir } from './tts';
+import { voiceSurface } from './voice-target';
 import { parsePlaybackPath, parseWaitQuery, PlaybackStore } from './playback';
 import { PoseStore, normalizePoseInput } from './pose';
 import { SURFACE_TEXT, displayCovers, normalizeSurface, type Surface } from './surface';
@@ -202,6 +203,7 @@ const MIME: Record<string, string> = {
   '.mov': 'video/quicktime',
   '.mp4': 'video/mp4',
   '.png': 'image/png',
+  '.mp3': 'audio/mpeg',
   '.json': 'application/json; charset=utf-8',
   '.jsonc': 'application/json; charset=utf-8',
   '.ttf': 'font/ttf',
@@ -737,6 +739,39 @@ export function apply(ctx: any): void {
     return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 5;
   };
 
+  /**
+   * 朗读一段文本：**合成在宿主，播放交给渲染端**。
+   *
+   * 合成完成后写 `pets.<id>.voice` 指令叶子（`{ url, surface }`）：网页 overlay 与桌面窗口都从
+   * /state 收到，按 surface 认领（见 src/shared/state.ts 的 readVoice 与两端播放器；
+   * 哪一端播的规则在 ./voice-target）。宿主不再 spawn PowerShell / WinRT MediaPlayer——
+   * 那条路只在 Windows 有效，也拿不到渲染端的音量与输出设备。
+   *
+   * 调用方都是"先写 say 气泡、再 void 本函数"：气泡照旧立即出现，语音晚一步到；合成要跑
+   * Python（通常 1 秒起），await 它会把气泡一起拖慢。
+   *
+   * 任何失败都吞掉：朗读是附加能力，不能影响对话 / 碎碎念主流程。
+   */
+  const publishVoice = async (
+    petId: string,
+    display: unknown,
+    text: string,
+    tts: { voice: string; rate: number },
+  ): Promise<void> => {
+    try {
+      const file = await synthesize(text, { userRoot, voice: tts.voice, rate: tts.rate });
+      if (!file) return;
+      // 桌面 Helper 可能没起来（首次下载 / 崩溃熔断）：这时网页端才是唯一渲染端。
+      // surface=null = 两端都不显示这只宠物（display=desktop/none 且桌面没在跑）：不写叶子，
+      // 让"看不见的宠物"保持安静，也让这条语音自然过期。
+      const surface = voiceSurface(display, helper?.isRunning() === true);
+      if (surface === null) return;
+      state.writePet(petId, 'voice', { url: `${ROUTE_PREFIX}/tts/${basename(file)}`, surface });
+    } catch {
+      /* 合成失败只影响声音，不影响这一轮对话 / 碎碎念 */
+    }
+  };
+
   /** 生成/返回某宠物的一句碎碎念（周期 GET 与菜单手动触发共用的同一逻辑）：
    *  每只宠物独立生成（人设 = 它自己的 whisperPrompt，没写回落到所属条目）。生成成功就写进 S 的 pets.<id>.say——
    *  碎碎念 / 命令气泡 / 对话回复在前端本来就是**同一条展示链路**（同一个 triggerWhisper、
@@ -781,12 +816,10 @@ export function apply(ctx: any): void {
       return result;
     }
     state.writePet(petId, 'say', result.image ? { text: result.text, image: result.image } : { text: result.text });
-    // 朗读（可选）：碎碎念同样念出来，失败静默
+    // 朗读（可选）：碎碎念同样念出来，失败静默；播放交给渲染端（见 publishVoice）
     const tts = ctx.standaloneAi?.tts?.();
     if (tts?.enabled === true) {
-      void speak(result.text, {
-        userRoot,
-        enabled: true,
+      void publishVoice(petId, found.pet.display, result.text, {
         voice: String(tts.voice ?? 'zh-CN-XiaoxiaoNeural'),
         rate: Number(tts.rate ?? 0),
       });
@@ -848,12 +881,10 @@ export function apply(ctx: any): void {
         'say',
         generated.image ? { text: generated.text, image: generated.image } : { text: generated.text },
       );
-      // 朗读（可选，独立模式）：后台合成 + 播放；任何失败都不影响对话本身
+      // 朗读（可选，独立模式）：后台合成，播放交给渲染端；任何失败都不影响对话本身
       const tts = ctx.standaloneAi?.tts?.();
       if (tts?.enabled === true) {
-        void speak(generated.text, {
-          userRoot,
-          enabled: true,
+        void publishVoice(petId, found.pet.display, generated.text, {
           voice: String(tts.voice ?? 'zh-CN-XiaoxiaoNeural'),
           rate: Number(tts.rate ?? 0),
         });
@@ -2178,8 +2209,8 @@ export function apply(ctx: any): void {
     // mov（HEVC-with-Alpha）为 macOS Safari/WKWebView 定制格式：默认不随包发布，
     // 用户从 GitHub Release（assets-mov）下载后放 main-animation/mov/，并把客户端播放
     // 扩展名常量（src/shared/constants.ts 的 ANIMATION_EXT / 产物 lib/client.js）改为 .mov。
-    // 注意：font / pic 是扁平的 /<scope>/<file>，只有 thumb 是 /<scope>/<petId>/<file>——
-    // 这里先拆 scope，再按 scope 各自拆剩余段，避免 font/pic 被误当作 petId 吞掉文件段。
+    // 注意：font / pic / tts 是扁平的 /<scope>/<file>，只有 thumb 是 /<scope>/<petId>/<file>——
+    // 这里先拆 scope，再按 scope 各自拆剩余段，避免 font/pic/tts 被误当作 petId 吞掉文件段。
     const [scope, ...restParts] = rest.split('/');
     if (scope === 'font') {
       const fontRoot = join(PACKAGE_ROOT, 'assets', 'fonts');
@@ -2218,6 +2249,20 @@ export function apply(ctx: any): void {
       if (picFile === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: pic not found' };
       const ext = picFile.slice(picFile.lastIndexOf('.')).toLowerCase();
       return { kind: 'file', file: picFile, contentType: MIME[ext] ?? 'application/octet-stream' };
+    }
+
+    // 语音缓存：/dsh-pet-7340/tts/<sha1>.mp3 → <userRoot>/tts（edge-tts 的合成产物）。
+    // 渲染端的 <audio> 来取它——播放已经改到渲染端，宿主不再自己出声（见 publishVoice）。
+    // 只认缓存文件名的形状（40 位 sha1 + .mp3）：目录里虽然只有合成结果，也不在这里开一个
+    // "按名字读目录"的通用文件服务；段数、点段、分隔符一律进不了拼接。
+    // 文件不存在 → 404 文本（与 thumb/pic 的显式失败口径一致），而不是空 200。
+    if (scope === 'tts') {
+      const name = restParts.join('/');
+      if (!/^[0-9a-f]{40}\.mp3$/.test(name)) return { kind: 'text', status: 404, body: 'dsh-pet: voice not found' };
+      // 读目录用纯路径版：GET 不该因为一个不存在的声音而 mkdir（合成路径自己会建）
+      const voiceFile = resolveExisting(ttsCacheDir(userRoot), name);
+      if (voiceFile === undefined) return { kind: 'text', status: 404, body: 'dsh-pet: voice not found' };
+      return { kind: 'file', file: voiceFile, contentType: MIME['.mp3'] };
     }
 
     if (scope !== 'thumb') {

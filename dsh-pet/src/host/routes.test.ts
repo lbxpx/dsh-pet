@@ -33,6 +33,10 @@ const SHARED_PIC = 'SHARED-MEME-BYTES';
 const OWN_PIC = 'PETPACK-OWN-MEME';
 /** 中文名 pet pack（仓库明确支持中文名，标识符校验不得用 ASCII 白名单） */
 const CN_PET = '测试宠';
+/** 语音缓存文件名：40 位 sha1 + .mp3（路由只放行这个形状） */
+const VOICE_SHA = '0123456789abcdef0123456789abcdef01234567';
+/** 语音缓存内容（播放改到渲染端后，渲染端 <audio> 取的就是这份字节） */
+const VOICE = 'MP3-BYTES';
 
 type Result = { status: number; body: string };
 
@@ -77,6 +81,9 @@ before(() => {
   writeFileSync(join(userRoot, 'memes', '共用图.png'), SHARED_PIC);
   mkdirSync(join(userRoot, 'pet', `${CN_PET}-memes`), { recursive: true });
   writeFileSync(join(userRoot, 'pet', `${CN_PET}-memes`, '自家图.png'), OWN_PIC);
+  // 语音缓存：edge-tts 合成产物，经 /tts/<sha1>.mp3 发给渲染端
+  mkdirSync(join(userRoot, 'tts'), { recursive: true });
+  writeFileSync(join(userRoot, 'tts', `${VOICE_SHA}.mp3`), VOICE);
   // 用户根之外的诱饵：目录名以 -animation / -memes 结尾，正是旧漏洞能读到的东西
   mkdirSync(join(dir, 'outside-animation'), { recursive: true });
   writeFileSync(join(dir, 'outside-animation', 'leak.webm'), SECRET);
@@ -572,6 +579,29 @@ describe('pic/memes 路由 —— 素材根不得当路径片段（与 thumb 同
     const r = await call('/dsh-pet-7340/pic/memes/..%255C..%255C..%255Coutside-memes/leak.png');
     assert.equal(r.status, 404);
     assert.equal(r.body.includes(SECRET), false);
+  });
+});
+
+describe('tts 路由 —— 语音缓存（播放改到渲染端后由 <audio> 来取）', () => {
+  test('合法的 sha1.mp3 正常返回', async () => {
+    const r = await call(`/dsh-pet-7340/tts/${VOICE_SHA}.mp3`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body, VOICE);
+  });
+
+  test('不存在的 sha1 → 404（缓存被清 / 合成失败的显式失败口径）', async () => {
+    const r = await call(`/dsh-pet-7340/tts/${'f'.repeat(40)}.mp3`);
+    assert.equal(r.status, 404);
+    assert.equal(r.body.includes('voice not found'), true);
+  });
+
+  test('文件名形状不对 → 404，且绝不读到缓存目录之外', async () => {
+    // 目录里只有宿主写的合成结果；路由不替任何人做"按名字读目录"的通用文件服务
+    for (const bad of ['..%2F..%2Foutside-animation%2Fleak.mp3', 'x.mp3', `${VOICE_SHA}.wav`, VOICE_SHA]) {
+      const r = await call(`/dsh-pet-7340/tts/${bad}`);
+      assert.equal(r.status, 404, `name=${bad} 应 404`);
+      assert.equal(r.body.includes(SECRET), false, '不得读到用户根之外的内容');
+    }
   });
 });
 

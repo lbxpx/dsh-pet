@@ -307,6 +307,12 @@ export class HelperProcess {
     this.stdoutBuffer = '';
   }
 
+  /** helper 进程当前是否在跑（子进程存在；崩溃后的重启退避窗口里为 false）。
+   *  用于"这段语音交给哪一端播"：both 宠物在 Helper 没起来时只能由网页端出声。 */
+  isRunning(): boolean {
+    return this.child !== undefined;
+  }
+
   start(): import('node:child_process').ChildProcess | undefined {
     if (this.child || this.stopping) return this.child;
     this.lastStartAt = Date.now();

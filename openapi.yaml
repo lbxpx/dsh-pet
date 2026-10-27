@@ -1997,6 +1997,40 @@ paths:
               schema:
                 type: string
 
+  "/dsh-pet-7340/tts/{file}":
+    get:
+      tags: [Assets]
+      operationId: getVoice
+      summary: 获取语音朗读的 mp3 缓存
+      description: |
+        语音朗读（AI 设置里的「朗读对话回复」）的合成产物，按「文本 + 音色 + 语速」的 sha1 命名：
+        同一句话不会重复合成，文件名永不覆盖。
+
+        播放已经改到渲染端：宿主只落文件、把地址写进 `/state` 的 `pets.<id>.voice`，浏览器 overlay
+        与桌面窗口各自用 `<audio>` 来取。文件不存在（缓存被清 / 合成失败）→ `404` 显式失败；
+        文件名只接受 40 位 sha1 + `.mp3`，其余一律 `404`——这不是一个按名字读目录的通用文件服务。
+      parameters:
+        - name: file
+          in: path
+          required: true
+          description: 语音缓存文件名（`<40 位 sha1>.mp3`）
+          schema:
+            type: string
+      responses:
+        "200":
+          description: mp3 音频
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: "语音不存在（`dsh-pet: voice not found`）"
+          content:
+            text/plain:
+              schema:
+                type: string
+
   /dsh-pet-7340/menu/item:
     post:
       tags: [Action]

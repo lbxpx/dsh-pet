@@ -27,6 +27,7 @@ import {
   readPosition,
   readThrow,
   readLock,
+  readVoice,
   readWorkStatus,
   takeChanged,
   type PollState,
@@ -37,6 +38,7 @@ import {
 } from '../shared/state';
 import { WORK_STATUS_INDEX, type WorkStatusSnapshot } from '../shared/work-status';
 import { makeBalanceBubble, makeWhisperBubble } from './bubble';
+import { playVoice } from './voice';
 import { clickScore, SCORE_MIN_SPEED, mountScorePopup, spawnScoreBurst } from '../shared/score-popup';
 import {
   CANVAS_H,
@@ -2437,6 +2439,10 @@ export function makePetUI(rt: {
               sayRef.current[petId] = { ...said, seq: (sayRef.current[petId]?.seq ?? 0) + 1 };
               setSayTick((t) => t + 1);
             }
+          } else if (path.startsWith('pets.') && path.endsWith('.voice')) {
+            // 语音叶子：宿主合成完成后写入，播放本身在本端（桌面端 exclusive 时由桌面窗口播）。
+            // 与 say 是两条独立叶子：气泡立刻出现，语音晚一步到，互不重复触发。
+            playVoice(readVoice(leaf));
           } else if (path.startsWith('pets.') && path.endsWith('.anim')) {
             // 点播动画叶子：路径形如 pets.<id>.anim。同样按前缀/后缀切片，绝不 split('.')。
             // 每次写入 counter 都递增，所以同一个动画连点两次也会分发两次（重播）。
