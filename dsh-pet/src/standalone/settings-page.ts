@@ -116,7 +116,9 @@ export const settingsScript = `
       for (const item of sessions) {
         const option = document.createElement('option');
         option.value = item.id;
-        option.textContent = item.name + '（' + item.recorded + '/' + item.total + '）';
+        option.textContent = item.name + (item.type === 'imported'
+          ? '（导入）'
+          : '（' + item.recorded + '/' + item.total + '）');
         select.appendChild(option);
       }
       if (current) {

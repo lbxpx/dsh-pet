@@ -37,6 +37,8 @@ export const voicePage = `<!doctype html>
 <section class="card" id="library">
   <div class="topbar"><h2>声线库</h2><button id="refresh" class="secondary" type="button">刷新</button></div>
   <p class="hint">「设为当前」会把桌宠朗读切到这条声线；「试听」用当前本机服务合成同一句，方便横向比较。删除不可恢复，当前使用中的声线需先切换。</p>
+  <div class="import-row"><button id="import-zip-btn" class="secondary" type="button">导入 zip</button><input id="import-zip" type="file" accept=".zip,application/zip" hidden><span class="or">或</span><input id="import-folder" placeholder="本机语音包文件夹绝对路径" spellcheck="false"><button id="import-folder-btn" class="secondary" type="button">导入文件夹</button></div>
+  <p class="hint">包内需 <code>manifest.json</code> + <code>ref.wav</code>（可选 <code>dataset/&lt;n&gt;.wav</code> + <code>.txt</code>）。manifest 必填 <code>name</code> / <code>refText</code> / <code>consent:true</code> / <code>sourceUrl</code> / <code>license</code>；导入会生成新的 id，不覆盖已有声线。</p>
   <p id="library-msg" class="msg" role="status" aria-live="polite"></p>
   <div id="voices"></div>
   <p class="hint"><a id="back" href="/standalone-ai/">返回设置</a></p>
@@ -67,6 +69,8 @@ audio{display:block;width:100%;margin-top:14px}a{color:var(--blue)}
 .voice-actions button.danger{background:#fff;color:#a13b30;border:1.5px solid #c4564a}.voice-actions button.danger:hover{background:#fdf0ee}
 .badge{font-size:11px;color:#1a7f37;background:#e8f5ec;border-radius:999px;padding:2px 8px;margin-left:6px;vertical-align:middle}
 #library-msg{min-height:20px;font-size:13px}#refresh{min-height:34px;padding:5px 14px;font-size:13px}
+.import-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0 4px}.import-row button{min-height:38px;padding:6px 14px;font-size:13px;border-radius:6px}
+#import-folder{flex:1 1 220px;min-height:38px;border:1px solid #a5bdcb;border-radius:6px;padding:6px 10px;font:inherit;font-size:13px}.or{font-size:12px;color:var(--muted)}
 @media(max-width:560px){main{margin:20px auto}.sentence{font-size:22px}.countdown{font-size:52px}button{width:100%}.row{flex-direction:column;align-items:stretch}}
 `;
 
@@ -162,7 +166,10 @@ export const voiceScript = `
       const meta = document.createElement('div');
       meta.className = 'voice-meta';
       const date = voice.createdAt ? voice.createdAt.slice(0, 10) : '—';
-      meta.textContent = voice.recorded + '/' + voice.total + ' 句 · ' + date +
+      const scope = voice.type === 'imported'
+        ? '导入包 · ' + (voice.datasetCount || 0) + ' 句训练数据'
+        : voice.recorded + '/' + voice.total + ' 句';
+      meta.textContent = scope + ' · ' + date +
         (voice.refSeconds ? ' · 参考 ' + voice.refSeconds + 's' : '') + ' · ' + voice.id;
       info.appendChild(title);
       info.appendChild(meta);
@@ -244,6 +251,49 @@ export const voiceScript = `
     }
   }
   get('refresh').addEventListener('click', () => { void loadSessions(); });
+  get('import-zip-btn').addEventListener('click', () => get('import-zip').click());
+  get('import-zip').addEventListener('change', async () => {
+    const file = get('import-zip').files && get('import-zip').files[0];
+    if (!file) return;
+    libraryMessage('正在导入 ' + file.name + '…');
+    try {
+      const response = await fetch('/standalone-ai/voice/import/zip', {
+        method: 'POST',
+        credentials: 'omit',
+        cache: 'no-store',
+        headers: { 'X-DSH-Pet-Token': token, 'Content-Type': 'application/zip' },
+        body: file
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data) throw new Error('导入失败：HTTP ' + response.status);
+      if (data.ok === false) throw new Error(data.message || '导入失败');
+      libraryMessage('✓ 已导入「' + data.session.name + '」');
+      await loadSessions();
+    } catch (error) {
+      libraryMessage('✗ ' + (error && error.message ? error.message : String(error)), true);
+    } finally {
+      get('import-zip').value = '';
+    }
+  });
+  get('import-folder-btn').addEventListener('click', async () => {
+    const folder = get('import-folder').value.trim();
+    if (!folder) {
+      libraryMessage('请先填写本机语音包文件夹的绝对路径', true);
+      return;
+    }
+    libraryMessage('正在从文件夹导入…');
+    try {
+      const data = await api('/standalone-ai/voice/import/folder', {
+        method: 'POST',
+        body: JSON.stringify({ path: folder })
+      });
+      libraryMessage('✓ 已导入「' + data.session.name + '」');
+      get('import-folder').value = '';
+      await loadSessions();
+    } catch (error) {
+      libraryMessage('✗ ' + (error && error.message ? error.message : String(error)), true);
+    }
+  });
   void loadSessions();
 
   api('/standalone-ai/voice/script')

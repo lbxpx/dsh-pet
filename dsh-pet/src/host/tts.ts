@@ -40,12 +40,22 @@ export interface SpeakOptions extends VoiceOptions {
   localUrl?: string;
 }
 
-/** 一条可用的本机声线（从 P2 的 voices/<id>/manifest.json 解析） */
+/** 一条可用的本机声线（从 voices/<id>/manifest.json 解析） */
 export interface RecordedVoice {
   id: string;
   name: string;
   refPath: string;
   refText: string;
+  /** GPT-SoVITS 语言代码：zh / en / ja / ko / yue（未知一律按中文） */
+  language: 'zh' | 'en' | 'ja' | 'ko' | 'yue';
+}
+
+/** 把 manifest.language（zh-CN / en-US / ja / yue…）收敛成 GPT-SoVITS 的代码 */
+function ttsLanguage(value: unknown): RecordedVoice['language'] {
+  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (raw.startsWith('yue') || raw.startsWith('zh-hk') || raw.startsWith('zh-tw')) return 'yue';
+  const code = raw.slice(0, 2);
+  return code === 'en' || code === 'ja' || code === 'ko' ? code : 'zh';
 }
 
 const SESSION_ID = /^v-\d{8}-\d{6}-[0-9a-f]{4}$/;
@@ -109,6 +119,7 @@ interface VoiceManifestLike {
   ref?: unknown;
   refClipId?: unknown;
   refText?: unknown;
+  language?: unknown;
   clips?: unknown;
 }
 
@@ -132,6 +143,7 @@ function parseRecordedVoice(dir: string, id: string): RecordedVoice | undefined 
   const refPath = join(dir, manifest.ref);
   if (!existsSync(refPath)) return undefined;
   const name = typeof manifest.name === 'string' && manifest.name.trim() ? manifest.name.trim() : id;
+  const language = ttsLanguage((manifest as { language?: unknown }).language);
   const clips = Array.isArray(manifest.clips) ? (manifest.clips as VoiceClipLike[]) : [];
   let refText = typeof manifest.refText === 'string' && manifest.refText.trim() ? manifest.refText : '';
   if (!refText) {
@@ -154,7 +166,7 @@ function parseRecordedVoice(dir: string, id: string): RecordedVoice | undefined 
     }
   }
   if (!refText || !refText.trim()) return undefined;
-  return { id, name, refPath, refText };
+  return { id, name, refPath, refText, language };
 }
 
 /** 列出可用声线（只收 status=ready 且 consent=true、ref.wav 存在的会话） */
@@ -213,7 +225,9 @@ export async function synthesizeRecorded(
   const voice = resolveRecordedVoice(options.userRoot, options.voiceId);
   if (!voice) throw new Error('本机声线不存在或还没有生成 ref.wav');
   const rate = Math.max(-50, Math.min(100, Math.round(options.rate)));
-  const key = createHash('sha1').update(`${clean}\u0000local\u0000${voice.id}\u0000${rate}`).digest('hex');
+  const key = createHash('sha1')
+    .update(`${clean}\u0000local\u0000${voice.id}\u0000${voice.language}\u0000${rate}`)
+    .digest('hex');
   const file = join(ensureCacheDir(options.userRoot), `${key}.wav`);
   if (existsSync(file)) return file;
 
@@ -234,10 +248,10 @@ export async function synthesizeRecorded(
       signal: controller.signal,
       body: JSON.stringify({
         text: clean,
-        text_lang: 'zh',
+        text_lang: voice.language,
         ref_audio_path: voice.refPath,
         prompt_text: voice.refText,
-        prompt_lang: 'zh',
+        prompt_lang: voice.language,
         top_k: 15,
         top_p: 1,
         temperature: 1,

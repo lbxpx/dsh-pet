@@ -4,6 +4,8 @@ import { rejectRequest } from './request-security';
 
 export const MAX_REQUEST_BYTES = 1024 * 1024;
 export const MAX_SETTINGS_BYTES = 16 * 1024;
+/** 语音包 zip 上传上限（解压后另有 100MB 校验，见 voice-pack.ts） */
+export const MAX_VOICE_PACK_BYTES = 100 * 1024 * 1024;
 export const BODY_TIMEOUT_MS = 5000;
 
 /** Buffer once before invoking any plugin. Its old readBody then consumes a bounded replay stream. */

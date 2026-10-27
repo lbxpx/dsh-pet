@@ -17,6 +17,7 @@ import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 
 import { join } from 'node:path';
 import { VOICE_SAMPLE_RATE, analyzeSamples, judgeVoiceClip, parsePcm16Wav, type VoiceMetrics } from './voice-format';
 import { VOICE_SENTENCES, voiceSentence, type VoiceCategory } from './voice-sentences';
+import type { VoicePack, VoicePackDatasetItem } from './voice-pack';
 
 export interface VoiceClipRecord {
   id: number;
@@ -33,11 +34,11 @@ export interface VoiceManifest {
   version: 1;
   id: string;
   name: string;
-  type: 'recorded';
+  type: 'recorded' | 'imported';
   createdAt: string;
   /** 克隆真人声线必须本人同意；没有它 P3 不允许拿去做参考音频 */
   consent: true;
-  language: 'zh-CN';
+  language: string;
   sampleRate: number;
   status: 'recording' | 'ready';
   clips: VoiceClipRecord[];
@@ -45,6 +46,12 @@ export interface VoiceManifest {
   /** 参考音频来自哪一句（P3 合成时要把这句的文本当 prompt_text） */
   refClipId?: number;
   refText?: string;
+  refSeconds?: number;
+  /** 导入包记录来源与许可（P5；录制产物没有这两项） */
+  sourceUrl?: string;
+  license?: string;
+  /** 导入包可选的精调数据集（录制产物的数据在 clips + dataset 文件里） */
+  dataset?: Array<Omit<VoicePackDatasetItem, 'wav'>>;
 }
 
 export interface VoiceSessionSummary {
@@ -55,6 +62,8 @@ export interface VoiceSessionSummary {
   recorded: number;
   createdAt?: string;
   status?: 'recording' | 'ready';
+  type?: 'recorded' | 'imported';
+  datasetCount?: number;
   /** 参考音频时长（秒）与大小（字节）：声线库列表展示用，缺失时为 undefined */
   refSeconds?: number;
   refBytes?: number;
@@ -81,6 +90,8 @@ export interface VoiceStudio {
   renameSession(sessionId: string, name: unknown): Promise<VoiceSessionSummary>;
   /** 删除整条声线目录（不可恢复；调用方负责拒绝删除“当前使用中”的声线） */
   deleteSession(sessionId: string): Promise<{ id: string; name: string }>;
+  /** 导入一个已校验的语音包（P5）：生成新 id，写 ref/dataset/manifest */
+  importPack(pack: VoicePack): Promise<VoiceSessionSummary>;
 }
 
 const SESSION_ID = /^v-\d{8}-\d{6}-[0-9a-f]{4}$/;
@@ -105,18 +116,6 @@ async function writeManifest(file: string, manifest: VoiceManifest): Promise<voi
   await rename(temp, file);
 }
 
-function summary(id: string, dir: string, manifest: VoiceManifest): VoiceSessionSummary {
-  return {
-    id,
-    name: manifest.name,
-    dir,
-    total: VOICE_SENTENCES.length,
-    recorded: manifest.clips.length,
-    createdAt: manifest.createdAt,
-    status: manifest.status,
-  };
-}
-
 /** 列表/详情补充 ref 信息（stat 失败不影响其余字段） */
 async function withRef(
   summaryValue: VoiceSessionSummary,
@@ -130,8 +129,47 @@ async function withRef(
     /* ref 还没生成（录制中） */
   }
   const clip = manifest.clips.find((item) => item.id === manifest.refClipId);
-  if (clip) summaryValue.refSeconds = clip.durationSec;
+  const refSeconds = manifest.refSeconds ?? clip?.durationSec;
+  if (refSeconds !== undefined) summaryValue.refSeconds = refSeconds;
   return summaryValue;
+}
+
+/** 生成新的会话目录：v-YYYYMMDD-HHMMSS-xxxx（同一秒冲突加随机后缀重试） */
+async function allocateSession(voicesRoot: string, date: Date): Promise<{ id: string; dir: string }> {
+  await mkdir(voicesRoot, { recursive: true });
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const stamp =
+    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-` +
+    `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  let id = '';
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const candidate = `v-${stamp}-${randomBytes(2).toString('hex')}`;
+    try {
+      await mkdir(join(voicesRoot, candidate));
+      id = candidate;
+      break;
+    } catch {
+      /* 冲突（或目录已存在）→ 换一个后缀 */
+    }
+  }
+  if (!id) throw new Error('无法创建声线目录：请检查数据目录的写入权限');
+  return { id, dir: join(voicesRoot, id) };
+}
+
+function summary(id: string, dir: string, manifest: VoiceManifest): VoiceSessionSummary {
+  const imported = manifest.type === 'imported';
+  const datasetCount = manifest.dataset?.length ?? 0;
+  return {
+    id,
+    name: manifest.name,
+    dir,
+    total: imported ? datasetCount : VOICE_SENTENCES.length,
+    recorded: imported ? datasetCount : manifest.clips.length,
+    createdAt: manifest.createdAt,
+    status: manifest.status,
+    type: manifest.type,
+    datasetCount,
+  };
 }
 
 /**
@@ -161,26 +199,8 @@ export function createVoiceStudio(voicesRoot: string, now: () => number = Date.n
     async createSession(input) {
       const name = sanitizeName(input.name);
       if (input.consent !== true) throw new Error('需要先确认「这是本人的声音，并同意用于声线克隆」');
-      await mkdir(voicesRoot, { recursive: true });
       const date = new Date(now());
-      const pad = (n: number): string => String(n).padStart(2, '0');
-      const stamp =
-        `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-` +
-        `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
-      // 同一秒内重复开录：加 4 位随机后缀，冲突就重试（最多 8 次）
-      let id = '';
-      for (let attempt = 0; attempt < 8; attempt += 1) {
-        const candidate = `v-${stamp}-${randomBytes(2).toString('hex')}`;
-        try {
-          await mkdir(join(voicesRoot, candidate));
-          id = candidate;
-          break;
-        } catch {
-          /* 冲突（或目录已存在）→ 换一个后缀 */
-        }
-      }
-      if (!id) throw new Error('无法创建录制目录：请检查数据目录的写入权限');
-      const dir = join(voicesRoot, id);
+      const { id, dir } = await allocateSession(voicesRoot, date);
       await mkdir(join(dir, 'dataset'), { recursive: true });
       const manifest: VoiceManifest = {
         version: 1,
@@ -246,6 +266,7 @@ export function createVoiceStudio(voicesRoot: string, now: () => number = Date.n
       manifest.ref = 'ref.wav';
       manifest.refClipId = chosen.id;
       manifest.refText = chosen.text;
+      manifest.refSeconds = chosen.durationSec;
       manifest.status = 'ready';
       await writeManifest(join(dir, 'manifest.json'), manifest);
       return { ...summary(sessionId, dir, manifest), ref: 'ref.wav', manifest };
@@ -269,6 +290,42 @@ export function createVoiceStudio(voicesRoot: string, now: () => number = Date.n
       // 整目录删除：dataset + ref + manifest 一起走；id 已在 load 里按形状校验过
       await rm(dir, { recursive: true, force: true });
       return { id: sessionId, name: manifest.name };
+    },
+
+    async importPack(pack) {
+      const date = new Date(now());
+      const { id, dir } = await allocateSession(voicesRoot, date);
+      await mkdir(join(dir, 'dataset'), { recursive: true });
+      await writeFile(join(dir, 'ref.wav'), pack.ref);
+      for (const item of pack.dataset) {
+        await writeFile(join(dir, item.file), item.wav);
+        await writeFile(join(dir, 'dataset', item.id + '.txt'), item.text + '\n', 'utf8');
+      }
+      const manifest: VoiceManifest = {
+        version: 1,
+        id,
+        name: pack.manifest.name,
+        type: 'imported',
+        createdAt: date.toISOString(),
+        consent: true,
+        language: pack.manifest.language,
+        sampleRate: VOICE_SAMPLE_RATE,
+        status: 'ready',
+        clips: [],
+        ref: 'ref.wav',
+        refText: pack.manifest.refText,
+        refSeconds: pack.refSeconds,
+        sourceUrl: pack.manifest.sourceUrl,
+        license: pack.manifest.license,
+        dataset: pack.dataset.map((item) => ({
+          id: item.id,
+          text: item.text,
+          file: item.file,
+          durationSec: item.durationSec,
+        })),
+      };
+      await writeManifest(join(dir, 'manifest.json'), manifest);
+      return withRef(summary(id, dir, manifest), dir, manifest);
     },
   };
 }

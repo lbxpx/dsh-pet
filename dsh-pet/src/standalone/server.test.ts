@@ -9,7 +9,7 @@ import { after, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,7 +18,56 @@ import { createRequestListener, listenStandaloneServer } from './server.ts';
 import { createRequestSecurity } from './request-security.ts';
 const security = createRequestSecurity();
 
-/** 造一段 32kHz 单声道 16-bit WAV（前 0.4s 静音，其余正常音量正弦波） */
+/** 造一个 stored（不压缩）zip：只为导入接口测试用，不校验 CRC */
+function storedZip(files: Record<string, Buffer | string>): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const [name, value] of Object.entries(files)) {
+    const body = Buffer.isBuffer(value) ? value : Buffer.from(value, 'utf8');
+    const nameBuffer = Buffer.from(name, 'utf8');
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt32LE(body.length, 18);
+    local.writeUInt32LE(body.length, 22);
+    local.writeUInt16LE(nameBuffer.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0x0800, 8);
+    central.writeUInt32LE(body.length, 20);
+    central.writeUInt32LE(body.length, 24);
+    central.writeUInt16LE(nameBuffer.length, 28);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, nameBuffer, body);
+    centrals.push(central, nameBuffer);
+    offset += local.length + nameBuffer.length + body.length;
+  }
+  const centralBuffer = Buffer.concat(centrals);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(Object.keys(files).length, 8);
+  eocd.writeUInt16LE(Object.keys(files).length, 10);
+  eocd.writeUInt32LE(centralBuffer.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, centralBuffer, eocd]);
+}
+
+/** 导入包 manifest（必填字段齐全） */
+function packManifest(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    name: '导入声线',
+    refText: '窗外下着小雨，屋里暖洋洋的。',
+    consent: true,
+    sourceUrl: 'https://example.com/voice-pack',
+    license: 'CC-BY-4.0',
+    language: 'zh-CN',
+    ...overrides,
+  });
+}
 function makeWav(seconds: number): Buffer {
   const sampleRate = 32_000;
   const count = Math.round(seconds * sampleRate);
@@ -626,6 +675,78 @@ test('录制向导：页面公开、API 要令牌；会话/录音/完成整条�
     assert.equal(sessions.sessions[0].recorded, 1);
 
     assert.equal((await fetch(base + '/standalone-ai/voice/nope', { headers })).status, 404);
+  } finally {
+    await server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('语音包导入：zip 上传 / 文件夹导入都落成新声线；坏包明确失败', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-pet-voice-import-'));
+  const folder = join(home, 'my-pack');
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, 'manifest.json'), packManifest());
+  writeFileSync(join(folder, 'ref.wav'), makeWav(3));
+  const server = await listenStandaloneServer({ port: 0, security, logger: silent, routes: [], home });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const headers = { 'X-DSH-Pet-Token': security.token };
+    const json = { ...headers, 'Content-Type': 'application/json' };
+
+    const zip = storedZip({
+      'manifest.json': packManifest({ name: 'zip 声线' }),
+      'ref.wav': makeWav(3),
+      'dataset/1.wav': makeWav(2),
+      'dataset/1.txt': '第一句',
+    });
+    const imported = await fetch(base + '/standalone-ai/voice/import/zip', {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/zip' },
+      body: zip,
+    });
+    const zipResult = await imported.json();
+    assert.equal(zipResult.ok, true, zipResult.message);
+    assert.equal(zipResult.session.type, 'imported');
+    assert.equal(zipResult.session.datasetCount, 1);
+    assert.equal(zipResult.session.name, 'zip 声线');
+    const zipDir = join(home, 'dsh-pet', 'voices', zipResult.session.id);
+    assert.equal(existsSync(join(zipDir, 'ref.wav')), true);
+    assert.equal(existsSync(join(zipDir, 'dataset', '1.wav')), true);
+    assert.equal(existsSync(join(zipDir, 'dataset', '1.txt')), true);
+    const manifestOnDisk = JSON.parse(readFileSync(join(zipDir, 'manifest.json'), 'utf8'));
+    assert.equal(manifestOnDisk.sourceUrl, 'https://example.com/voice-pack');
+    assert.equal(manifestOnDisk.license, 'CC-BY-4.0');
+
+    const sessions = (await (await fetch(base + '/standalone-ai/voice/sessions', { headers })).json()).sessions;
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0].type, 'imported');
+
+    const badZip = await fetch(base + '/standalone-ai/voice/import/zip', {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/zip' },
+      body: Buffer.from('not a zip'),
+    });
+    const badZipResult = await badZip.json();
+    assert.equal(badZipResult.ok, false);
+    assert.match(badZipResult.message, /zip|manifest/);
+
+    const folderResult = await (
+      await fetch(base + '/standalone-ai/voice/import/folder', {
+        method: 'POST',
+        headers: json,
+        body: JSON.stringify({ path: folder }),
+      })
+    ).json();
+    assert.equal(folderResult.ok, true, folderResult.message);
+    assert.equal(folderResult.session.type, 'imported');
+    assert.equal(folderResult.session.datasetCount, 0);
+
+    // 导入的声线不是 active（测试里没有 ai 设置），可以直接删
+    const removed = await (
+      await fetch(base + `/standalone-ai/voice/session/${zipResult.session.id}`, { method: 'DELETE', headers })
+    ).json();
+    assert.equal(removed.ok, true);
+    assert.equal(existsSync(zipDir), false);
   } finally {
     await server.close();
     rmSync(home, { recursive: true, force: true });

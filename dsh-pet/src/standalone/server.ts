@@ -1,13 +1,13 @@
 /** Standalone loopback HTTP boundary. Desktop bridge requests never pass through this listener. */
 import { timingSafeEqual } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
 import type { RegisteredRoute, StandaloneLogger } from './context';
 import { createRequestSecurity, rejectRequest, secureResponse } from './request-security';
 import type { RequestSecurity } from './request-security';
-import { boundedRequest, MAX_REQUEST_BYTES, MAX_SETTINGS_BYTES } from './request-body';
+import { boundedRequest, MAX_REQUEST_BYTES, MAX_SETTINGS_BYTES, MAX_VOICE_PACK_BYTES } from './request-body';
 import { publicSettings, validateSettings } from './settings';
 import type { StandaloneSettingsService } from './settings';
 import { settingsPage, settingsScript, settingsStyle } from './settings-page';
@@ -15,6 +15,7 @@ import { voicePage, voiceScript, voiceStyle } from './voice-page';
 import { createVoiceStudio, listVoiceSessions } from './voice-recording';
 import { VOICE_CATEGORY_LABELS, VOICE_SENTENCES } from './voice-sentences';
 import { VOICE_MAX_SEC, VOICE_MIN_SEC, VOICE_SAMPLE_RATE } from './voice-format';
+import { parseVoicePack, readVoicePackFolder, readVoiceZip } from './voice-pack';
 
 export const DEFAULT_STANDALONE_PORT = 3080;
 export const PORT_SCAN_LIMIT = 25;
@@ -354,6 +355,38 @@ function voiceApiHandler(
       }
       return;
     }
+    if (pathname === '/standalone-ai/voice/import/zip') {
+      if (method !== 'POST') {
+        rejectRequest(res, 405, '仅支持 POST');
+        return;
+      }
+      try {
+        const body = await readBinaryBody(req);
+        if (body.length === 0) throw new Error('上传内容为空');
+        if (body.length > MAX_VOICE_PACK_BYTES) throw new Error('语音包不能超过 100MB');
+        const pack = parseVoicePack(readVoiceZip(body));
+        sendJson(res, 200, { ok: true, session: await studio.importPack(pack) });
+      } catch (error) {
+        sendJson(res, 200, { ok: false, message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (pathname === '/standalone-ai/voice/import/folder') {
+      if (method !== 'POST') {
+        rejectRequest(res, 405, '仅支持 POST');
+        return;
+      }
+      try {
+        const input = await readJsonObject(req);
+        const folder = typeof input.path === 'string' ? input.path.trim() : '';
+        if (!folder || !isAbsolute(folder)) throw new Error('请填写本机文件夹的绝对路径');
+        const pack = await readVoicePackFolder(folder);
+        sendJson(res, 200, { ok: true, session: await studio.importPack(pack) });
+      } catch (error) {
+        sendJson(res, 200, { ok: false, message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
     const managedSession = /^\/standalone-ai\/voice\/session\/([^/]+)$/.exec(pathname);
     if (managedSession) {
       const id = managedSession[1];
@@ -568,7 +601,12 @@ export function createRequestListener(
     const hasBody = req.headers['transfer-encoding'] !== undefined || Number(req.headers['content-length'] ?? 0) > 0;
     const bodyMethod = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method ?? '');
     if ((hasBody || bodyMethod) && typeof req.on === 'function') {
-      const limit = pathname === '/standalone-ai/settings' ? MAX_SETTINGS_BYTES : MAX_REQUEST_BYTES;
+      const limit =
+        pathname === '/standalone-ai/settings'
+          ? MAX_SETTINGS_BYTES
+          : pathname === '/standalone-ai/voice/import/zip'
+            ? MAX_VOICE_PACK_BYTES
+            : MAX_REQUEST_BYTES;
       void boundedRequest(req, res, limit, options.bodyTimeoutMs)
         .then((bounded) => {
           if (bounded) route(bounded, res, pathname);
