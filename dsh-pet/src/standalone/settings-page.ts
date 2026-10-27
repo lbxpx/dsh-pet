@@ -24,6 +24,13 @@ export const settingsPage = `<!doctype html>
 <div><label for="maxTokens">单次输出上限（tokens）</label><input id="maxTokens" type="number" min="128" max="4096" step="1" value="1024" required></div></div>
 <p class="hint">间隔至少 60 秒，默认 300 秒。输出上限越小，单次回复越简短。</p>
 </fieldset>
+<fieldset><legend>语音朗读</legend>
+<label class="check"><input id="speakEnabled" type="checkbox" aria-describedby="speak-note">朗读对话回复</label>
+<p class="hint" id="speak-note">用 Edge 神经语音朗读（需联网，文本会发送到微软合成）。首次使用需要本机装有 Python 的 edge-tts 组件。</p>
+<div class="pair"><div><label for="ttsVoice">音色</label><select id="ttsVoice"><option value="zh-CN-XiaoxiaoNeural">晓晓 · 女声（温暖）</option><option value="zh-CN-XiaoyiNeural">晓伊 · 女声（活泼）</option><option value="zh-CN-YunxiNeural">云希 · 男声（阳光）</option><option value="zh-CN-YunyangNeural">云扬 · 男声（专业）</option><option value="zh-CN-YunxiaNeural">云夏 · 男声（可爱）</option><option value="zh-CN-YunjianNeural">云健 · 男声（激情）</option></select></div>
+<div><label for="ttsRate">语速（-50 ~ 100）</label><input id="ttsRate" type="number" min="-50" max="100" step="5" value="0" required></div></div>
+<p class="hint">语速 0 = 正常，负数更慢，正数更快。</p>
+</fieldset>
 <fieldset><legend>对话与历史</legend>
 <label for="persona">人格提示词</label><textarea id="persona" name="persona" rows="4" maxlength="4000" spellcheck="false" placeholder="例如：你是主人的桌面小助手，说话简洁、先给结论。留空则使用桌宠配置里的 whisperPrompt。"></textarea>
 <p class="hint">这段文字作为对话的系统提示词（system prompt）。留空 = 沿用桌宠配置里的人设。</p>
@@ -75,10 +82,10 @@ export const settingsScript = `
     return response.json();
   }
   function populate(data) {
-    for (const id of ['protocol','baseUrl','model','whisperIntervalSec','maxTokens','persona','historyPath']) {
+    for (const id of ['protocol','baseUrl','model','whisperIntervalSec','maxTokens','persona','historyPath','ttsVoice','ttsRate']) {
       if (data[id] !== undefined) get(id).value = String(data[id]);
     }
-    for (const id of ['enabled','automaticWhispers']) get(id).checked = data[id] === true;
+    for (const id of ['enabled','automaticWhispers','speakEnabled']) get(id).checked = data[id] === true;
     get('history-file').textContent = data.historyFile || '—';
     get('key-state').textContent = data.hasKey ? '已保存 · 不回显' : '尚未设置';
     get('apiKey').value = '';
@@ -196,7 +203,8 @@ export const settingsScript = `
       apiKey: get('apiKey').value, clearApiKey: get('clearApiKey').checked,
       enabled: get('enabled').checked, automaticWhispers: get('automaticWhispers').checked,
       whisperIntervalSec: Number(get('whisperIntervalSec').value), maxTokens: Number(get('maxTokens').value),
-      persona: get('persona').value, historyPath: get('historyPath').value.trim()
+      persona: get('persona').value, historyPath: get('historyPath').value.trim(),
+      speakEnabled: get('speakEnabled').checked, ttsVoice: get('ttsVoice').value, ttsRate: Number(get('ttsRate').value)
     };
     get('apiKey').value = '';
     try {

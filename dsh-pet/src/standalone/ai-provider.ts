@@ -255,6 +255,9 @@ export function createStandaloneAi(
         timeoutMs: 15_000,
         persona: '',
         historyPath: '',
+        speakEnabled: false,
+        ttsVoice: 'zh-CN-XiaoxiaoNeural',
+        ttsRate: 0,
       };
 
       const controller = new AbortController();

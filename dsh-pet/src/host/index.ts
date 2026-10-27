@@ -118,6 +118,7 @@ import { decideAnim } from './anim';
 import { LockStore } from './lock';
 import { MENU_WAIT_MAX_MS, MenuRegistry } from './menu';
 import { decidePosition, decideThrow, positionLeafData } from './motion-cue';
+import { speak } from './tts';
 import { parsePlaybackPath, parseWaitQuery, PlaybackStore } from './playback';
 import { PoseStore, normalizePoseInput } from './pose';
 import { SURFACE_TEXT, displayCovers, normalizeSurface, type Surface } from './surface';
@@ -780,6 +781,16 @@ export function apply(ctx: any): void {
       return result;
     }
     state.writePet(petId, 'say', result.image ? { text: result.text, image: result.image } : { text: result.text });
+    // 朗读（可选）：碎碎念同样念出来，失败静默
+    const tts = ctx.standaloneAi?.tts?.();
+    if (tts?.enabled === true) {
+      void speak(result.text, {
+        userRoot,
+        enabled: true,
+        voice: String(tts.voice ?? 'zh-CN-XiaoxiaoNeural'),
+        rate: Number(tts.rate ?? 0),
+      });
+    }
     // 文本随返回值带出，且与刚写进叶子的**是同一个变量**：两条出口给同一份文本，不是一个真相两个版本
     return { ok: true, text: result.text, ...(result.image ? { image: result.image } : {}) };
   };
@@ -837,6 +848,16 @@ export function apply(ctx: any): void {
         'say',
         generated.image ? { text: generated.text, image: generated.image } : { text: generated.text },
       );
+      // 朗读（可选，独立模式）：后台合成 + 播放；任何失败都不影响对话本身
+      const tts = ctx.standaloneAi?.tts?.();
+      if (tts?.enabled === true) {
+        void speak(generated.text, {
+          userRoot,
+          enabled: true,
+          voice: String(tts.voice ?? 'zh-CN-XiaoxiaoNeural'),
+          rate: Number(tts.rate ?? 0),
+        });
+      }
       // 同一份文本随返回值带出（叶子照写，不是二选一）
       return { ok: true as const, text: generated.text, ...(generated.image ? { image: generated.image } : {}) };
     });

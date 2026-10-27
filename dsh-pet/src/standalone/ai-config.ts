@@ -16,6 +16,12 @@ export interface StandaloneAiPublicSettings {
   persona: string;
   /** 对话历史文件路径（留空 = <DSH_HOME>/dsh-pet/memory.json） */
   historyPath: string;
+  /** 是否朗读回复（Edge 神经语音） */
+  speakEnabled: boolean;
+  /** Edge 音色名 */
+  ttsVoice: string;
+  /** 语速百分比（-50 ~ +100） */
+  ttsRate: number;
   hasKey: boolean;
 }
 export type StandaloneAiSettings = Omit<StandaloneAiPublicSettings, 'hasKey'> & { apiKey: string };
@@ -32,6 +38,9 @@ export const DEFAULT_AI_SETTINGS: Readonly<StandaloneAiSettings> = Object.freeze
   apiKey: '',
   persona: '',
   historyPath: '',
+  speakEnabled: false,
+  ttsVoice: 'zh-CN-XiaoxiaoNeural',
+  ttsRate: 0,
 });
 
 function safeEndpoint(value: string): boolean {
@@ -78,6 +87,12 @@ const fields = {
     .max(1024)
     .refine((s) => !containsControlChar(s), '历史路径不能包含控制字符')
     .refine((s) => s.trim() === '' || s.trim().toLowerCase().endsWith('.json'), '历史文件必须是 .json'),
+  speakEnabled: z.boolean(),
+  ttsVoice: z
+    .string()
+    .max(100)
+    .refine((s) => /^[A-Za-z0-9-]+Neural$/.test(s), '音色名不合法'),
+  ttsRate: z.number().int().min(-50).max(100),
   apiKey: z
     .string()
     .max(4096)

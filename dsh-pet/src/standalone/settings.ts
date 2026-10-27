@@ -44,6 +44,13 @@ const settingsSchema = z
       .max(1024)
       .refine((s) => s.trim() === '' || s.trim().toLowerCase().endsWith('.json'), '历史文件必须是 .json')
       .optional(),
+    speakEnabled: z.boolean().optional(),
+    ttsVoice: z
+      .string()
+      .max(100)
+      .refine((s) => /^[A-Za-z0-9-]+Neural$/.test(s), '音色名不合法')
+      .optional(),
+    ttsRate: z.number().int().min(-50).max(100).optional(),
   })
   .strict();
 
@@ -64,6 +71,9 @@ const publicNames = [
   'timeoutMs',
   'persona',
   'historyPath',
+  'speakEnabled',
+  'ttsVoice',
+  'ttsRate',
   'hasKey',
 ] as const;
 export function publicSettings(input: unknown): Record<string, unknown> {

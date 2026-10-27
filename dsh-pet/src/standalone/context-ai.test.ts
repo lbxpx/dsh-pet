@@ -26,7 +26,13 @@ function modelService() {
     },
     isReady: () => true,
     canWhisper: () => false,
-    getSettings: () => ({ whisperIntervalSec: 300, persona: '' }),
+    getSettings: () => ({
+      whisperIntervalSec: 300,
+      persona: '',
+      speakEnabled: false,
+      ttsVoice: 'zh-CN-XiaoxiaoNeural',
+      ttsRate: 0,
+    }),
     historyFilePath: () => 'C:/tmp/dsh-pet-memory.json',
     dispose: () => calls.push('dispose'),
   };
