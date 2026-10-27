@@ -118,7 +118,8 @@ export const settingsScript = `
         option.value = item.id;
         option.textContent = item.name + (item.type === 'imported'
           ? '（导入）'
-          : '（' + item.recorded + '/' + item.total + '）');
+          : '（' + item.recorded + '/' + item.total + '）') +
+          (item.activeVariant === 'finetuned' ? ' · 精调' : '');
         select.appendChild(option);
       }
       if (current) {

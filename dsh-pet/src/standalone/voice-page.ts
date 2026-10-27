@@ -68,6 +68,7 @@ audio{display:block;width:100%;margin-top:14px}a{color:var(--blue)}
 .voice-actions{display:flex;gap:8px;flex-wrap:wrap}.voice-actions button{min-height:34px;padding:5px 12px;font-size:13px;border-radius:6px}
 .voice-actions button.danger{background:#fff;color:#a13b30;border:1.5px solid #c4564a}.voice-actions button.danger:hover{background:#fdf0ee}
 .badge{font-size:11px;color:#1a7f37;background:#e8f5ec;border-radius:999px;padding:2px 8px;margin-left:6px;vertical-align:middle}
+.badge-variant{color:#5a3b8c;background:#f0e9fa}.badge-variant + .badge-variant{margin-left:4px}
 #library-msg{min-height:20px;font-size:13px}#refresh{min-height:34px;padding:5px 14px;font-size:13px}
 .import-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0 4px}.import-row button{min-height:38px;padding:6px 14px;font-size:13px;border-radius:6px}
 #import-folder{flex:1 1 220px;min-height:38px;border:1px solid #a5bdcb;border-radius:6px;padding:6px 10px;font:inherit;font-size:13px}.or{font-size:12px;color:var(--muted)}
@@ -163,6 +164,14 @@ export const voiceScript = `
         badge.textContent = '当前使用';
         title.appendChild(badge);
       }
+      const activeVariant = voice.activeVariant || 'zero-shot';
+      const finetuned = (voice.variants || []).find((item) => item.kind === 'finetuned');
+      if (finetuned) {
+        const badge = document.createElement('span');
+        badge.className = 'badge badge-variant';
+        badge.textContent = activeVariant === 'finetuned' ? finetuned.label || '精调版' : '零样本';
+        title.appendChild(badge);
+      }
       const meta = document.createElement('div');
       meta.className = 'voice-meta';
       const date = voice.createdAt ? voice.createdAt.slice(0, 10) : '—';
@@ -175,15 +184,22 @@ export const voiceScript = `
       info.appendChild(meta);
       const actions = document.createElement('div');
       actions.className = 'voice-actions';
-      const unusable = voice.status !== 'ready' || !voice.recorded;
+      const unusable = voice.status !== 'ready' || (voice.type !== 'imported' && !voice.recorded);
       const preview = actionButton('试听', () => previewVoice(voice));
       preview.disabled = unusable;
       const active = actionButton('设为当前', () => setActiveVoice(voice));
       active.disabled = unusable || voice.active === true;
+      const variantButton = finetuned
+        ? actionButton(
+            activeVariant === 'finetuned' ? '切回零样本' : '用精调版',
+            () => setVoiceVariant(voice, activeVariant === 'finetuned' ? 'zero-shot' : 'finetuned'),
+          )
+        : null;
       const rename = actionButton('重命名', () => renameVoice(voice));
       const remove = actionButton('删除', () => deleteVoice(voice), true);
       remove.disabled = voice.active === true;
       actions.appendChild(preview);
+      if (variantButton) actions.appendChild(variantButton);
       actions.appendChild(active);
       actions.appendChild(rename);
       actions.appendChild(remove);
@@ -222,6 +238,20 @@ export const voiceScript = `
       await api('/standalone-ai/voice/active', { method: 'POST', body: JSON.stringify({ id: voice.id }) });
       libraryMessage('✓ 已把「' + voice.name + '」设为当前声线，朗读会立即使用它');
       await loadSessions();
+    } catch (error) {
+      libraryMessage('✗ ' + (error && error.message ? error.message : String(error)), true);
+    }
+  }
+  async function setVoiceVariant(voice, variant) {
+    try {
+      libraryMessage('正在切换到' + (variant === 'finetuned' ? '精调版' : '零样本') + '…');
+      const data = await api('/standalone-ai/voice/session/' + encodeURIComponent(voice.id) + '/variant', {
+        method: 'POST',
+        body: JSON.stringify({ variant })
+      });
+      libraryMessage('✓ 「' + voice.name + '」已切到' + (variant === 'finetuned' ? '精调版' : '零样本') + '，下次朗读生效');
+      await loadSessions();
+      return data;
     } catch (error) {
       libraryMessage('✗ ' + (error && error.message ? error.message : String(error)), true);
     }

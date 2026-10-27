@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -116,6 +116,40 @@ test('finish：自动挑参考音频写 ref.wav 并把 manifest 标成 ready；�
     assert.equal(done.manifest.status, 'ready');
     assert.equal(existsSync(join(session.dir, 'ref.wav')), true);
     assert.equal(done.manifest.clips.length, 2);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('setVariant：精调权重存在才能切；缺失/未知版本拒绝', async () => {
+  const f = fixture();
+  try {
+    const studio = createVoiceStudio(join(f.root, 'voices'), () => FIXED);
+    const session = await studio.createSession({ name: '小蓝', consent: true });
+    await studio.saveClip(session.id, 1, makeWav(3));
+    await studio.finish(session.id);
+    const manifestFile = join(session.dir, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
+    manifest.variants = [
+      { id: 'zero-shot', label: '零样本', kind: 'zero-shot' },
+      { id: 'finetuned', label: '精调版', kind: 'finetuned', sovits: 'models/s.pth', gpt: 'models/g.ckpt' },
+    ];
+    manifest.activeVariant = 'zero-shot';
+    writeFileSync(manifestFile, JSON.stringify(manifest));
+
+    await assert.rejects(studio.setVariant(session.id, 'finetuned'), /权重文件缺失/);
+    await assert.rejects(studio.setVariant(session.id, 'nope'), /未知/);
+
+    mkdirSync(join(session.dir, 'models'), { recursive: true });
+    writeFileSync(join(session.dir, 'models', 's.pth'), 'w');
+    writeFileSync(join(session.dir, 'models', 'g.ckpt'), 'w');
+    const changed = await studio.setVariant(session.id, 'finetuned');
+    assert.equal(changed.activeVariant, 'finetuned');
+    assert.equal(changed.variants?.length, 2);
+    assert.equal(JSON.parse(readFileSync(manifestFile, 'utf8')).activeVariant, 'finetuned');
+
+    const back = await studio.setVariant(session.id, 'zero-shot');
+    assert.equal(back.activeVariant, 'zero-shot');
   } finally {
     f.cleanup();
   }

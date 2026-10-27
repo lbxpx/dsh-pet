@@ -13,8 +13,9 @@
  * 会话 id 由服务端生成且只含安全字符——目录名永远不来自客户端输入。
  */
 import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { VOICE_SAMPLE_RATE, analyzeSamples, judgeVoiceClip, parsePcm16Wav, type VoiceMetrics } from './voice-format';
 import { VOICE_SENTENCES, voiceSentence, type VoiceCategory } from './voice-sentences';
 import type { VoicePack, VoicePackDatasetItem } from './voice-pack';
@@ -28,6 +29,18 @@ export interface VoiceClipRecord {
   durationSec: number;
   pass: boolean;
   metrics: VoiceMetrics;
+}
+
+export interface VoiceVariant {
+  id: string;
+  label: string;
+  kind: 'zero-shot' | 'finetuned';
+  /** 精调版权重（相对会话目录；零样本没有） */
+  sovits?: string;
+  gpt?: string;
+  trainedAt?: string;
+  epochs?: number;
+  dataset?: number;
 }
 
 export interface VoiceManifest {
@@ -52,6 +65,9 @@ export interface VoiceManifest {
   license?: string;
   /** 导入包可选的精调数据集（录制产物的数据在 clips + dataset 文件里） */
   dataset?: Array<Omit<VoicePackDatasetItem, 'wav'>>;
+  /** P6：零样本 / 精调版权重；activeVariant 决定当前用哪套 */
+  variants?: VoiceVariant[];
+  activeVariant?: string;
 }
 
 export interface VoiceSessionSummary {
@@ -64,6 +80,9 @@ export interface VoiceSessionSummary {
   status?: 'recording' | 'ready';
   type?: 'recorded' | 'imported';
   datasetCount?: number;
+  /** P6 变体（精调版存在时 UI 才显示切换） */
+  variants?: Array<Pick<VoiceVariant, 'id' | 'label' | 'kind'>>;
+  activeVariant?: string;
   /** 参考音频时长（秒）与大小（字节）：声线库列表展示用，缺失时为 undefined */
   refSeconds?: number;
   refBytes?: number;
@@ -92,6 +111,8 @@ export interface VoiceStudio {
   deleteSession(sessionId: string): Promise<{ id: string; name: string }>;
   /** 导入一个已校验的语音包（P5）：生成新 id，写 ref/dataset/manifest */
   importPack(pack: VoicePack): Promise<VoiceSessionSummary>;
+  /** 切换零样本 / 精调版（P6）；精调权重缺失时拒绝 */
+  setVariant(sessionId: string, variantId: string): Promise<VoiceSessionSummary>;
 }
 
 const SESSION_ID = /^v-\d{8}-\d{6}-[0-9a-f]{4}$/;
@@ -169,6 +190,8 @@ function summary(id: string, dir: string, manifest: VoiceManifest): VoiceSession
     status: manifest.status,
     type: manifest.type,
     datasetCount,
+    variants: manifest.variants?.map(({ id: variantId, label, kind }) => ({ id: variantId, label, kind })),
+    activeVariant: manifest.activeVariant ?? 'zero-shot',
   };
 }
 
@@ -326,6 +349,25 @@ export function createVoiceStudio(voicesRoot: string, now: () => number = Date.n
       };
       await writeManifest(join(dir, 'manifest.json'), manifest);
       return withRef(summary(id, dir, manifest), dir, manifest);
+    },
+
+    async setVariant(sessionId, variantId) {
+      const { dir, manifest } = await load(sessionId);
+      const variant = manifest.variants?.find((item) => item.id === variantId);
+      if (!variant) throw new Error('未知的声线版本');
+      if (variant.kind === 'finetuned') {
+        for (const relative of [variant.sovits, variant.gpt]) {
+          if (!relative || isAbsolute(relative) || relative.includes('..')) {
+            throw new Error('精调权重的路径不合法');
+          }
+          if (!existsSync(join(dir, relative))) {
+            throw new Error('精调权重文件缺失，请重新运行精调');
+          }
+        }
+      }
+      manifest.activeVariant = variant.id;
+      await writeManifest(join(dir, 'manifest.json'), manifest);
+      return withRef(summary(sessionId, dir, manifest), dir, manifest);
     },
   };
 }

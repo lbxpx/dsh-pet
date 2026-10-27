@@ -86,10 +86,52 @@ test('resolveRecordedVoice：新 manifest 直接读 refText；旧 manifest 按 r
   }
 });
 
+test('resolveRecordedVoice：精调版权重存在时 variant=finetuned，缺失则回落零样本', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-tts-variant-'));
+  try {
+    const id = 'v-20261027-205228-5b1e';
+    const dir = makeVoice(root, id);
+    const manifestFile = join(dir, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
+    manifest.variants = [
+      { id: 'zero-shot', label: '零样本', kind: 'zero-shot' },
+      {
+        id: 'finetuned',
+        label: '精调版',
+        kind: 'finetuned',
+        sovits: 'models/sovits/pengxin_e8.pth',
+        gpt: 'models/gpt/pengxin_e8.ckpt',
+      },
+    ];
+    manifest.activeVariant = 'finetuned';
+    writeFileSync(manifestFile, JSON.stringify(manifest));
+
+    // 权重文件缺失：不能假装用了精调版
+    assert.equal(resolveRecordedVoice(root, id)?.variant, 'zero-shot');
+
+    mkdirSync(join(dir, 'models', 'sovits'), { recursive: true });
+    mkdirSync(join(dir, 'models', 'gpt'), { recursive: true });
+    writeFileSync(join(dir, 'models', 'sovits', 'pengxin_e8.pth'), 'w');
+    writeFileSync(join(dir, 'models', 'gpt', 'pengxin_e8.ckpt'), 'w');
+    const voice = resolveRecordedVoice(root, id);
+    assert.equal(voice?.variant, 'finetuned');
+    assert.equal(voice?.variantLabel, '精调版');
+    assert.equal(voice?.sovitsPath, join(dir, 'models', 'sovits', 'pengxin_e8.pth'));
+    assert.equal(voice?.gptPath, join(dir, 'models', 'gpt', 'pengxin_e8.ckpt'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('synthesizeRecorded：按声线取 ref 发请求，落 cache wav；同文本第二次命中缓存', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-pet-tts-http-'));
   const requests: Array<Record<string, unknown>> = [];
   const server = createServer((req, res) => {
+    if (req.url?.startsWith('/set_')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"message":"success"}');
+      return;
+    }
     let raw = '';
     req.on('data', (chunk) => (raw += String(chunk)));
     req.on('end', () => {
@@ -134,6 +176,11 @@ test('synthesizeRecorded：按声线取 ref 发请求，落 cache wav；同文�
 test('synthesizeRecorded：服务 500 / 非 WAV 响应都明确报错（由 synthesizeVoice 决定是否回落）', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-pet-tts-err-'));
   const server = createServer((req, res) => {
+    if (req.url?.startsWith('/set_')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"message":"success"}');
+      return;
+    }
     res.writeHead(req.url === '/tts' ? 500 : 404, { 'content-type': 'text/plain' });
     res.end('boom');
   });

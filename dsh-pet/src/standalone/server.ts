@@ -387,6 +387,21 @@ function voiceApiHandler(
       }
       return;
     }
+    const variantSession = /^\/standalone-ai\/voice\/session\/([^/]+)\/variant$/.exec(pathname);
+    if (variantSession) {
+      if (method !== 'POST') {
+        rejectRequest(res, 405, '仅支持 POST');
+        return;
+      }
+      try {
+        const input = await readJsonObject(req);
+        const variant = typeof input.variant === 'string' ? input.variant : '';
+        sendJson(res, 200, { ok: true, session: await studio.setVariant(variantSession[1], variant) });
+      } catch (error) {
+        sendJson(res, 200, { ok: false, message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
     const managedSession = /^\/standalone-ai\/voice\/session\/([^/]+)$/.exec(pathname);
     if (managedSession) {
       const id = managedSession[1];

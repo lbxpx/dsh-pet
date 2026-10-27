@@ -15,7 +15,7 @@
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** 一次合成的输入（来自 AI 设置的「语音朗读」区块） */
@@ -48,6 +48,12 @@ export interface RecordedVoice {
   refText: string;
   /** GPT-SoVITS 语言代码：zh / en / ja / ko / yue（未知一律按中文） */
   language: 'zh' | 'en' | 'ja' | 'ko' | 'yue';
+  /** P6：当前使用零样本还是精调权重 */
+  variant: 'zero-shot' | 'finetuned';
+  variantLabel: string;
+  /** 精调权重绝对路径（variant=finetuned 时存在） */
+  sovitsPath?: string;
+  gptPath?: string;
 }
 
 /** 把 manifest.language（zh-CN / en-US / ja / yue…）收敛成 GPT-SoVITS 的代码 */
@@ -111,6 +117,14 @@ interface VoiceClipLike {
   file?: unknown;
 }
 
+interface VoiceVariantLike {
+  id?: unknown;
+  label?: unknown;
+  kind?: unknown;
+  sovits?: unknown;
+  gpt?: unknown;
+}
+
 interface VoiceManifestLike {
   id?: unknown;
   name?: unknown;
@@ -121,9 +135,9 @@ interface VoiceManifestLike {
   refText?: unknown;
   language?: unknown;
   clips?: unknown;
+  variants?: unknown;
+  activeVariant?: unknown;
 }
-
-const recordedVoiceCache = new Map<string, RecordedVoice>();
 
 function sha1File(file: string): string {
   return createHash('sha1').update(readFileSync(file)).digest('hex');
@@ -166,7 +180,24 @@ function parseRecordedVoice(dir: string, id: string): RecordedVoice | undefined 
     }
   }
   if (!refText || !refText.trim()) return undefined;
-  return { id, name, refPath, refText, language };
+  const variants = Array.isArray(manifest.variants) ? (manifest.variants as VoiceVariantLike[]) : [];
+  const activeId = typeof manifest.activeVariant === 'string' ? manifest.activeVariant : 'zero-shot';
+  const selected = variants.find((item) => item.id === activeId && item.kind === 'finetuned');
+  let variant: RecordedVoice['variant'] = 'zero-shot';
+  let variantLabel = '零样本';
+  let sovitsPath: string | undefined;
+  let gptPath: string | undefined;
+  if (selected && typeof selected.sovits === 'string' && typeof selected.gpt === 'string') {
+    const sovits = join(dir, selected.sovits);
+    const gpt = join(dir, selected.gpt);
+    if (existsSync(sovits) && existsSync(gpt)) {
+      variant = 'finetuned';
+      variantLabel = typeof selected.label === 'string' && selected.label.trim() ? selected.label.trim() : '精调版';
+      sovitsPath = sovits;
+      gptPath = gpt;
+    }
+  }
+  return { id, name, refPath, refText, language, variant, variantLabel, sovitsPath, gptPath };
 }
 
 /** 列出可用声线（只收 status=ready 且 consent=true、ref.wav 存在的会话） */
@@ -182,17 +213,8 @@ export function listRecordedVoices(userRoot: string): RecordedVoice[] {
   }
   const out: RecordedVoice[] = [];
   for (const id of entries.sort()) {
-    const dir = join(root, id);
-    const cached = recordedVoiceCache.get(id);
-    if (cached) {
-      out.push(cached);
-      continue;
-    }
-    const voice = parseRecordedVoice(dir, id);
-    if (voice) {
-      recordedVoiceCache.set(id, voice);
-      out.push(voice);
-    }
+    const voice = parseRecordedVoice(join(root, id), id);
+    if (voice) out.push(voice);
   }
   return out;
 }
@@ -200,16 +222,66 @@ export function listRecordedVoices(userRoot: string): RecordedVoice[] {
 /** 按 id 取一条可用声线（不存在 / 未完成 / 无 consent → undefined） */
 export function resolveRecordedVoice(userRoot: string, voiceId: string): RecordedVoice | undefined {
   if (!SESSION_ID.test(voiceId)) return undefined;
-  const cached = recordedVoiceCache.get(voiceId);
-  if (cached) return cached;
-  const voice = parseRecordedVoice(join(userRoot, 'voices', voiceId), voiceId);
-  if (voice) recordedVoiceCache.set(voiceId, voice);
-  return voice;
+  return parseRecordedVoice(join(userRoot, 'voices', voiceId), voiceId);
 }
 
 /** 语速百分比（-50~100）→ GPT-SoVITS 的 speed_factor（0.5~2） */
 function speedFactor(rate: number): number {
   return Math.round(Math.min(2, Math.max(0.5, 1 + rate / 100)) * 100) / 100;
+}
+
+/** 预训练权重（零样本）在 GPT-SoVITS 仓库里的相对路径；api_v2 以仓库根为 cwd */
+const BASE_SOVITS = 'GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s2G2333k.pth';
+const BASE_GPT = 'GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt';
+const WEIGHT_TTL_MS = 120_000;
+
+let activeWeightsKey = '';
+let activeWeightsAt = 0;
+let weightQueue: Promise<unknown> = Promise.resolve();
+
+/** 调 /set_*_weights；服务端返回 {"message":"success"} 才算成功 */
+async function applyWeights(baseUrl: string, sovits: string, gpt: string): Promise<void> {
+  for (const [endpoint, weightPath] of [
+    ['set_sovits_weights', sovits],
+    ['set_gpt_weights', gpt],
+  ] as const) {
+    const response = await fetch(`${baseUrl}/${endpoint}?weights_path=${encodeURIComponent(weightPath)}`, {
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!response.ok) {
+      const detail = (await response.text().catch(() => '')).slice(0, 200);
+      throw new Error(`切换声线权重失败（HTTP ${response.status}${detail ? '：' + detail : ''}）`);
+    }
+    const body = await response.text();
+    if (!body.includes('success')) throw new Error('切换声线权重失败：' + body.slice(0, 200));
+  }
+}
+
+/**
+ * 所有本机合成都串行执行：GPT-SoVITS 的权重是**全局状态**，切权重与合成之间不能插队。
+ * 精调版权重每次 TTL 到期会重新加载（防止服务重启后状态不一致）；零样本需要时切回预训练权重。
+ */
+function runWithVoiceWeights<T>(voice: RecordedVoice, baseUrl: string, task: () => Promise<T>): Promise<T> {
+  const key = voice.variant === 'finetuned' ? `${voice.id}:finetuned` : 'base';
+  const apply = (): Promise<void> =>
+    voice.variant === 'finetuned' && voice.sovitsPath && voice.gptPath
+      ? applyWeights(baseUrl, voice.sovitsPath, voice.gptPath)
+      : applyWeights(baseUrl, BASE_SOVITS, BASE_GPT);
+  const run = weightQueue.then(async () => {
+    if (activeWeightsKey !== key || Date.now() - activeWeightsAt > WEIGHT_TTL_MS) {
+      await apply();
+      activeWeightsKey = key;
+      activeWeightsAt = Date.now();
+    }
+    return task();
+  });
+  weightQueue = run.then(
+    () => undefined,
+    () => {
+      activeWeightsKey = '';
+    },
+  );
+  return run;
 }
 
 /**
@@ -225,58 +297,57 @@ export async function synthesizeRecorded(
   const voice = resolveRecordedVoice(options.userRoot, options.voiceId);
   if (!voice) throw new Error('本机声线不存在或还没有生成 ref.wav');
   const rate = Math.max(-50, Math.min(100, Math.round(options.rate)));
+  const weightsStamp = voice.sovitsPath ? statSync(voice.sovitsPath).mtimeMs : 0;
   const key = createHash('sha1')
-    .update(`${clean}\u0000local\u0000${voice.id}\u0000${voice.language}\u0000${rate}`)
+    .update(`${clean}\u0000local\u0000${voice.id}\u0000${voice.variant}\u0000${weightsStamp}\u0000${rate}`)
     .digest('hex');
   const file = join(ensureCacheDir(options.userRoot), `${key}.wav`);
   if (existsSync(file)) return file;
 
-  let endpoint: string;
+  let origin: string;
   try {
-    const url = new URL(options.localUrl.trim() || 'http://127.0.0.1:9880');
-    endpoint = url.origin + '/tts';
+    origin = new URL(options.localUrl.trim() || 'http://127.0.0.1:9880').origin;
   } catch {
     throw new Error('本机声线服务地址不合法');
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 180_000);
-  timer.unref?.();
   try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        text: clean,
-        text_lang: voice.language,
-        ref_audio_path: voice.refPath,
-        prompt_text: voice.refText,
-        prompt_lang: voice.language,
-        top_k: 15,
-        top_p: 1,
-        temperature: 1,
-        text_split_method: 'cut5',
-        batch_size: 1,
-        speed_factor: speedFactor(rate),
-        media_type: 'wav',
-        streaming_mode: false,
-      }),
+    return await runWithVoiceWeights(voice, origin, async () => {
+      const response = await fetch(origin + '/tts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        signal: AbortSignal.timeout(180_000),
+        body: JSON.stringify({
+          text: clean,
+          text_lang: voice.language,
+          ref_audio_path: voice.refPath,
+          prompt_text: voice.refText,
+          prompt_lang: voice.language,
+          top_k: 15,
+          top_p: 1,
+          temperature: 1,
+          text_split_method: 'cut5',
+          batch_size: 1,
+          speed_factor: speedFactor(rate),
+          media_type: 'wav',
+          streaming_mode: false,
+        }),
+      });
+      if (!response.ok) {
+        const detail = (await response.text().catch(() => '')).slice(0, 200);
+        throw new Error(`本机声线服务 HTTP ${response.status}${detail ? '：' + detail : ''}`);
+      }
+      const audio = Buffer.from(await response.arrayBuffer());
+      if (audio.length < 44 || audio.toString('ascii', 0, 4) !== 'RIFF') {
+        throw new Error('本机声线服务没有返回 WAV（检查 GPT-SoVITS 是否已加载完成）');
+      }
+      writeFileSync(file, audio);
+      return file;
     });
-    if (!response.ok) {
-      const detail = (await response.text().catch(() => '')).slice(0, 200);
-      throw new Error(`本机声线服务 HTTP ${response.status}${detail ? '：' + detail : ''}`);
-    }
-    const audio = Buffer.from(await response.arrayBuffer());
-    if (audio.length < 44 || audio.toString('ascii', 0, 4) !== 'RIFF') {
-      throw new Error('本机声线服务没有返回 WAV（检查 GPT-SoVITS 是否已加载完成）');
-    }
-    writeFileSync(file, audio);
-    return file;
   } catch (error) {
-    if (controller.signal.aborted) throw new Error('本机声线合成超时（180 秒）', { cause: error });
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      throw new Error('本机声线合成超时（180 秒）', { cause: error });
+    }
     throw error;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
