@@ -1,5 +1,7 @@
 /** Standalone loopback HTTP boundary. Desktop bridge requests never pass through this listener. */
 import { timingSafeEqual } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
 import type { RegisteredRoute, StandaloneLogger } from './context';
@@ -70,7 +72,10 @@ function settingsHandler(
       return;
     }
     if (req.method === 'GET') {
-      sendJson(res, 200, publicSettings(ai.getSettings()));
+      sendJson(res, 200, {
+        ...publicSettings(ai.getSettings()),
+        ...(typeof ai.historyFilePath === 'function' ? { historyFile: ai.historyFilePath() } : {}),
+      });
       return;
     }
     if (req.method !== 'POST') {
@@ -134,12 +139,62 @@ function testHandler(
   };
 }
 
+function historyExportHandler(
+  ai: StandaloneSettingsService | undefined,
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  return async (req, res) => {
+    if (req.method !== 'GET') {
+      rejectRequest(res, 405, '仅支持 GET');
+      return;
+    }
+    const file = typeof ai?.historyFilePath === 'function' ? ai.historyFilePath() : undefined;
+    if (!file) {
+      rejectRequest(res, 404, '历史文件路径不可用');
+      return;
+    }
+    let payload = '{}';
+    try {
+      payload = await readFile(file, 'utf8');
+    } catch {
+      // 还没有历史文件：导出一份空记录，不当作错误
+    }
+    const name = `dsh-pet-history-${new Date().toISOString().slice(0, 10)}.json`;
+    res.writeHead(200, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-length': Buffer.byteLength(payload),
+      'content-disposition': `attachment; filename="${name}"`,
+    });
+    res.end(payload);
+  };
+}
+
+function historyClearHandler(
+  ai: StandaloneSettingsService | undefined,
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  return async (req, res) => {
+    if (req.method !== 'POST') {
+      rejectRequest(res, 405, '仅支持 POST');
+      return;
+    }
+    const file = typeof ai?.historyFilePath === 'function' ? ai.historyFilePath() : undefined;
+    if (!file) {
+      rejectRequest(res, 404, '历史文件路径不可用');
+      return;
+    }
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, '{}\n', 'utf8');
+    sendJson(res, 200, { ok: true, path: file });
+  };
+}
+
 function dispatch(
   options: StandaloneServerOptions,
   shutdownSecurity?: RequestSecurity,
 ): (req: IncomingMessage, res: ServerResponse, pathname: string) => void {
   const settings = settingsHandler(options.ai);
   const tester = testHandler(options.ai);
+  const exporter = historyExportHandler(options.ai);
+  const clearer = historyClearHandler(options.ai);
   return (req, res, pathname) => {
     const method = req.method ?? 'GET';
     if (method === 'OPTIONS') {
@@ -195,6 +250,14 @@ function dispatch(
     }
     if (pathname === '/standalone-ai/test') {
       void tester(req, res).catch((error: unknown) => fail(res, error, options.logger));
+      return;
+    }
+    if (pathname === '/standalone-ai/history/export') {
+      void exporter(req, res).catch((error: unknown) => fail(res, error, options.logger));
+      return;
+    }
+    if (pathname === '/standalone-ai/history/clear') {
+      void clearer(req, res).catch((error: unknown) => fail(res, error, options.logger));
       return;
     }
     const route = options.routes.find((candidate) => matches(candidate, pathname));

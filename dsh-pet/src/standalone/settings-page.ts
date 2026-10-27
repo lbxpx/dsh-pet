@@ -24,6 +24,13 @@ export const settingsPage = `<!doctype html>
 <div><label for="maxTokens">单次输出上限（tokens）</label><input id="maxTokens" type="number" min="128" max="4096" step="1" value="1024" required></div></div>
 <p class="hint">间隔至少 60 秒，默认 300 秒。输出上限越小，单次回复越简短。</p>
 </fieldset>
+<fieldset><legend>对话与历史</legend>
+<label for="persona">人格提示词</label><textarea id="persona" name="persona" rows="4" maxlength="4000" spellcheck="false" placeholder="例如：你是主人的桌面小助手，说话简洁、先给结论。留空则使用桌宠配置里的 whisperPrompt。"></textarea>
+<p class="hint">这段文字作为对话的系统提示词（system prompt）。留空 = 沿用桌宠配置里的人设。</p>
+<label for="historyPath">对话历史文件路径</label><input id="historyPath" name="historyPath" type="text" maxlength="1024" spellcheck="false" placeholder="留空 = 默认位置（DSH 用户目录下的 dsh-pet/memory.json）" aria-describedby="history-note">
+<p class="hint" id="history-note">支持绝对路径，必须以 .json 结尾；目录不存在会自动创建。当前生效：<code id="history-file">—</code></p>
+<div class="history-row"><button id="export-btn" type="button" class="secondary">导出历史</button><button id="clear-btn" type="button" class="danger">清空历史</button><span id="history-result" class="test-result" role="status" aria-live="polite"></span></div>
+</fieldset>
 <footer><p id="privacy">所有配置与密钥仅保存在当前机器。<br>关闭 AI 后，桌宠仍可正常显示、移动与互动。</p><button id="save" type="submit" disabled>保存到本机</button></footer>
 <p id="status" role="status" aria-live="polite">正在读取本机设置…</p>
 </form><noscript>需要启用 JavaScript 才能保存设置。请从桌宠菜单打开本页。</noscript></main></body></html>`;
@@ -34,6 +41,11 @@ export const settingsStyle = `
 main{max-width:720px;margin:48px auto;padding:0 24px 32px}header{padding:0 12px 28px}.fish{display:block;font:700 29px/1.3 Georgia,serif;color:var(--blue);letter-spacing:2px;margin-bottom:24px}.local{font-size:13px;color:var(--muted);margin:0 0 10px}h1{font-size:32px;line-height:1.3;letter-spacing:-1px;margin:0 0 16px;font-weight:700}.intro{margin:0;color:var(--muted)}
 form{background:var(--paper);border:1px solid var(--line);border-radius:16px 16px 6px 6px;padding:28px 32px 20px}fieldset{padding:0 0 28px;margin:0 0 24px;border:0;border-bottom:1px solid var(--line);min-width:0}legend{font-size:19px;font-weight:700;margin-bottom:18px;padding:0}label{display:block;font-weight:600;font-size:14px;margin:14px 0 6px}input:not([type=checkbox]),select{display:block;width:100%;min-height:44px;border:1px solid #a5bdcb;border-radius:6px;background:#fff;color:var(--ink);padding:9px 12px;font:inherit;font-size:15px}input::placeholder{color:#6a7e8b}input[type=checkbox]{accent-color:var(--blue);width:18px;height:18px;flex-shrink:0;margin:0}.check{display:flex;align-items:center;gap:10px;min-height:32px;cursor:pointer}.enabled{margin-top:24px}.clear{font-weight:400;color:var(--muted);font-size:13px}.hint{font-size:12px;line-height:1.6;color:var(--muted);margin:7px 0 0}.key-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px}.key-heading label{margin:0 0 6px}.key-heading .hint{margin:0 0 6px}.notice{font-size:13px;color:#704b13;background:#fff7e7;border-left:3px solid #c18e36;margin:12px 0 16px;padding:12px 14px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:20px}footer{display:flex;align-items:center;justify-content:space-between;gap:18px}footer p{font-size:12px;color:var(--muted);margin:0}button{border:0;border-radius:7px;min-height:44px;padding:10px 20px;background:var(--blue);color:#fff;font:600 15px/1.5 inherit;white-space:nowrap;cursor:pointer}button:hover{background:#0b4e73}button:disabled{opacity:.55;cursor:wait}:focus-visible{outline:3px solid #3a94c4;outline-offset:3px}#status{font-size:13px;min-height:24px;margin:18px 0 0;color:var(--blue)}#status[data-error=true]{color:#a13b30}
 .test-row{display:flex;align-items:center;gap:14px;margin:20px 0 6px;flex-wrap:wrap}#test-btn{background:#fff;color:var(--blue);border:1.5px solid var(--blue);min-height:38px;padding:6px 18px;font-size:14px;border-radius:6px;cursor:pointer;font-weight:600}#test-btn:hover{background:#edf5fa}#test-btn:disabled{opacity:.6;cursor:wait}.test-result{font-size:13px;line-height:1.5;min-height:22px;flex:1 1 200px}.test-success{color:#1a7f37;font-weight:600}.test-error{color:#cf222e}.reply-preview{display:block;color:var(--muted);font-weight:normal;font-size:12px;margin-top:4px;word-break:break-all}
+textarea{display:block;width:100%;min-height:104px;border:1px solid #a5bdcb;border-radius:6px;background:#fff;color:var(--ink);padding:10px 12px;font:inherit;font-size:15px;line-height:1.55;resize:vertical}
+textarea::placeholder{color:#6a7e8b}code{font:13px/1.5 ui-monospace,Consolas,monospace;background:#eef5f9;border:1px solid var(--line);border-radius:4px;padding:1px 6px;word-break:break-all}
+.history-row{display:flex;align-items:center;gap:12px;margin:20px 0 6px;flex-wrap:wrap}.history-row button{min-height:38px;padding:6px 18px;font-size:14px;border-radius:6px}
+button.secondary{background:#fff;color:var(--blue);border:1.5px solid var(--blue)}button.secondary:hover{background:#edf5fa}
+button.danger{background:#fff;color:#a13b30;border:1.5px solid #c4564a}button.danger:hover{background:#fdf0ee}
 @media(max-width:560px){main{margin:24px auto;padding:0 14px 24px}header{padding:0 8px 24px}h1{font-size:28px}form{padding:24px 20px 16px}.pair{grid-template-columns:1fr;gap:0}footer{align-items:stretch;flex-direction:column}button{width:100%}.fish{margin-bottom:18px}}
 `;
 
@@ -63,10 +75,11 @@ export const settingsScript = `
     return response.json();
   }
   function populate(data) {
-    for (const id of ['protocol','baseUrl','model','whisperIntervalSec','maxTokens']) {
+    for (const id of ['protocol','baseUrl','model','whisperIntervalSec','maxTokens','persona','historyPath']) {
       if (data[id] !== undefined) get(id).value = String(data[id]);
     }
     for (const id of ['enabled','automaticWhispers']) get(id).checked = data[id] === true;
+    get('history-file').textContent = data.historyFile || '—';
     get('key-state').textContent = data.hasKey ? '已保存 · 不回显' : '尚未设置';
     get('apiKey').value = '';
     get('clearApiKey').checked = false;
@@ -123,6 +136,56 @@ export const settingsScript = `
       }
     });
   }
+  function historyMessage(text, error = false) {
+    const node = get('history-result');
+    node.className = 'test-result' + (error ? ' test-error' : ' test-success');
+    node.textContent = text;
+  }
+  const exportBtn = get('export-btn');
+  if (exportBtn) {
+    exportBtn.addEventListener('click', async () => {
+      exportBtn.disabled = true;
+      try {
+        const response = await fetch('/standalone-ai/history/export', {
+          credentials: 'omit', cache: 'no-store', headers: { 'X-DSH-Pet-Token': token }
+        });
+        if (!response.ok) throw new Error('导出失败（' + response.status + '）');
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'dsh-pet-history-' + new Date().toISOString().slice(0, 10) + '.json';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        historyMessage('已导出 ' + a.download);
+      } catch (error) {
+        historyMessage(error && error.message ? error.message : '导出失败', true);
+      } finally {
+        exportBtn.disabled = false;
+      }
+    });
+  }
+  const clearBtn = get('clear-btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', async () => {
+      if (!confirm('确定清空全部对话历史？此操作不可撤销（建议先导出备份）。')) return;
+      clearBtn.disabled = true;
+      try {
+        const response = await fetch('/standalone-ai/history/clear', {
+          method: 'POST', credentials: 'omit', cache: 'no-store', headers: { 'X-DSH-Pet-Token': token }
+        });
+        if (!response.ok) throw new Error('清空失败（' + response.status + '）');
+        const data = await response.json();
+        historyMessage('已清空：' + (data.path || '历史文件'));
+      } catch (error) {
+        historyMessage(error && error.message ? error.message : '清空失败', true);
+      } finally {
+        clearBtn.disabled = false;
+      }
+    });
+  }
   form.addEventListener('submit', async event => {
     event.preventDefault();
     if (!form.reportValidity()) return;
@@ -132,7 +195,8 @@ export const settingsScript = `
       protocol: get('protocol').value, baseUrl: get('baseUrl').value.trim(), model: get('model').value.trim(),
       apiKey: get('apiKey').value, clearApiKey: get('clearApiKey').checked,
       enabled: get('enabled').checked, automaticWhispers: get('automaticWhispers').checked,
-      whisperIntervalSec: Number(get('whisperIntervalSec').value), maxTokens: Number(get('maxTokens').value)
+      whisperIntervalSec: Number(get('whisperIntervalSec').value), maxTokens: Number(get('maxTokens').value),
+      persona: get('persona').value, historyPath: get('historyPath').value.trim()
     };
     get('apiKey').value = '';
     try {

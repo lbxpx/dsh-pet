@@ -44,6 +44,8 @@ export interface StandaloneAiService {
   }): Promise<{ ok: boolean; message: string; reply?: string }>;
   isReady(): boolean;
   canWhisper(): boolean;
+  /** 解析后的对话历史文件绝对路径（AI 设置里的 historyPath 或默认位置） */
+  historyFilePath(): string;
   dispose(): void;
 }
 /** Optional third argument is an isolated transport/clock seam; production uses official SDKs. */
@@ -222,6 +224,7 @@ export function createStandaloneAi(
       }
     },
     isReady: ready,
+    historyFilePath: () => store.historyFilePath(),
     async testConnection(input: { protocol?: string; baseUrl?: string; model?: string; apiKey?: string }) {
       if (disposed) return { ok: false, message: '服务已关闭' };
       const current = store.current();
@@ -250,6 +253,8 @@ export function createStandaloneAi(
         whisperIntervalSec: 300,
         maxTokens: 32,
         timeoutMs: 15_000,
+        persona: '',
+        historyPath: '',
       };
 
       const controller = new AbortController();

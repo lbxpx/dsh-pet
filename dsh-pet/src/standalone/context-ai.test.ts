@@ -26,7 +26,8 @@ function modelService() {
     },
     isReady: () => true,
     canWhisper: () => false,
-    getSettings: () => ({ whisperIntervalSec: 300 }),
+    getSettings: () => ({ whisperIntervalSec: 300, persona: '' }),
+    historyFilePath: () => 'C:/tmp/dsh-pet-memory.json',
     dispose: () => calls.push('dispose'),
   };
 }

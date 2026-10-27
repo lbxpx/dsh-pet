@@ -48,7 +48,9 @@ export interface StandaloneModelService {
   stream(options: unknown): AsyncIterable<unknown>;
   isReady(): boolean;
   canWhisper(): boolean;
-  getSettings(): { whisperIntervalSec: number };
+  getSettings(): { whisperIntervalSec: number; persona: string };
+  /** 解析后的对话历史文件绝对路径（独立模式：AI 设置 historyPath / 默认 memory.json） */
+  historyFilePath(): string;
   dispose(): void;
 }
 
@@ -149,6 +151,8 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
             isReady: () => ai.isReady(),
             canWhisper: () => ai.canWhisper(),
             whisperIntervalSec: () => ai.getSettings().whisperIntervalSec,
+            persona: () => ai.getSettings().persona,
+            historyFilePath: () => ai.historyFilePath(),
           },
         }
       : {}),

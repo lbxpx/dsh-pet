@@ -97,7 +97,7 @@ import { createReadStream, existsSync, fstatSync, readFileSync } from 'node:fs';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
-import { join, normalize, resolve, sep } from 'node:path';
+import { dirname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
@@ -655,12 +655,22 @@ export function apply(ctx: any): void {
 
   // 对话记忆文件（唯一读写方 = 本进程；浏览器/桌面两端都只是客户端 → 同一实例天然共享同一份记忆）。
   // 结构双层：{ <种类桶 assetRoot ?? petId>: { <实例 id>: { messages: ChatMemoryMessage[] } } }
-  const memoryPath = join(userRoot, 'memory.json');
+  // 位置可配：独立模式的 AI 设置里 historyPath 优先，其余情况沿用 <userRoot>/memory.json。
+  const defaultMemoryPath = join(userRoot, 'memory.json');
+  const memoryFilePath = (): string => {
+    try {
+      const configured = ctx.standaloneAi?.historyFilePath?.();
+      return typeof configured === 'string' && configured.length > 0 ? configured : defaultMemoryPath;
+    } catch {
+      return defaultMemoryPath;
+    }
+  };
   // 对话写操作串行队列：read-modify-write 排队执行，防两端同时对话时交错写盘
   let chatQueue: Promise<void> = Promise.resolve();
 
   /** 读记忆文件：不存在 → 空；损坏 → 显式报错 + 备份原始文件（绝不静默丢数据）+ 重建空记忆 */
   const readMemory = async (): Promise<Record<string, Record<string, { messages: ChatMemoryMessage[] }>>> => {
+    const memoryPath = memoryFilePath();
     let raw: string;
     try {
       raw = await readFile(memoryPath, 'utf8');
@@ -676,7 +686,7 @@ export function apply(ctx: any): void {
         `dsh-pet: 记忆文件损坏已备份（对话将从头开始）：${memoryPath}（${e instanceof Error ? e.message : String(e)}）`,
       );
       try {
-        await mkdir(userRoot, { recursive: true });
+        await mkdir(dirname(memoryPath), { recursive: true });
         await writeFile(`${memoryPath}.bak-${Date.now()}`, raw, 'utf8');
       } catch {
         /* 备份失败仅告警，不阻断 */
@@ -686,7 +696,8 @@ export function apply(ctx: any): void {
   };
 
   const writeMemory = async (mem: Record<string, Record<string, { messages: ChatMemoryMessage[] }>>): Promise<void> => {
-    await mkdir(userRoot, { recursive: true });
+    const memoryPath = memoryFilePath();
+    await mkdir(dirname(memoryPath), { recursive: true });
     await writeFile(memoryPath, JSON.stringify(mem, null, 2), 'utf8');
   };
 
@@ -793,8 +804,13 @@ export function apply(ctx: any): void {
       // 分桶，外加一只幽灵叶子（/state 里常驻到进程重启）。
       if (!found) return { ok: false, reason: 'unknown-pet', message: '没有这只桌宠：' + petId };
       const rounds = memoryRounds(found.conf);
-      // 人设：实例级 whisperPrompt 优先，没写回落所属条目（与碎碎念同一拼装）
-      const system = petSystemPrompt(found);
+      // 人设：独立模式 AI 设置里填了 persona 就用它（全局覆盖）；否则实例级 whisperPrompt 优先，
+      // 没写回落所属条目（与碎碎念同一拼装）
+      const personaOverride = ctx.standaloneAi?.persona?.();
+      const system =
+        typeof personaOverride === 'string' && personaOverride.trim().length > 0
+          ? personaOverride
+          : petSystemPrompt(found);
       // 配图：开关关闭 → 空池（指令与解析都不介入，与旧行为逐字一致）；目录链按所属条目取。
       // 张数上限（chatImageLimit，0 = 不限制）：整张清单每条消息都要附，截断后费用上限可控。
       const pool =

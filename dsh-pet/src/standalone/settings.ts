@@ -4,6 +4,8 @@ import { z } from 'zod';
 export interface StandaloneSettingsService {
   getSettings(): unknown;
   saveSettings(input: unknown): Promise<unknown>;
+  /** 解析后的对话历史文件绝对路径（可选：老实现不提供时设置页不显示该行） */
+  historyFilePath?(): string;
   testConnection?(input: {
     protocol?: string;
     baseUrl?: string;
@@ -36,6 +38,12 @@ const settingsSchema = z
     whisperIntervalSec: z.number().int().min(60).max(86400).optional(),
     maxTokens: z.number().int().min(128).max(4096).optional(),
     timeoutMs: z.number().int().min(1000).max(60000).optional(),
+    persona: z.string().max(4000).optional(),
+    historyPath: z
+      .string()
+      .max(1024)
+      .refine((s) => s.trim() === '' || s.trim().toLowerCase().endsWith('.json'), '历史文件必须是 .json')
+      .optional(),
   })
   .strict();
 
@@ -54,6 +62,8 @@ const publicNames = [
   'whisperIntervalSec',
   'maxTokens',
   'timeoutMs',
+  'persona',
+  'historyPath',
   'hasKey',
 ] as const;
 export function publicSettings(input: unknown): Record<string, unknown> {

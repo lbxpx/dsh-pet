@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAiConfig, validateSettings, DEFAULT_AI_SETTINGS } from './ai-config.ts';
@@ -49,6 +49,38 @@ test('validates safe endpoints and explicit configuration with fixed redacted er
       () => validateSettings({ ...configured, ...patch }, DEFAULT_AI_SETTINGS),
       /Invalid standalone AI settings/,
     );
+  }
+});
+
+test('legacy settings without persona / historyPath load with defaults instead of failing', () => {
+  const home = mkdtempSync(join(tmpdir(), 'pet-ai-legacy-'));
+  try {
+    const dir = join(home, 'dsh-pet');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'standalone-ai.json'),
+      JSON.stringify({
+        protocol: 'anthropic',
+        baseUrl: 'https://example.test/anthropic',
+        model: 'legacy-model',
+        enabled: true,
+        automaticWhispers: false,
+        whisperIntervalSec: 300,
+        maxTokens: 1024,
+        timeoutMs: 30000,
+        apiKey: 'legacy-key',
+      }),
+      'utf8',
+    );
+    const store = createAiConfig(home);
+    const pub = store.publicSettings();
+    assert.equal(pub.model, 'legacy-model');
+    assert.equal(pub.hasKey, true);
+    assert.equal(pub.persona, '');
+    assert.equal(pub.historyPath, '');
+    assert.equal(store.historyFilePath(), join(dir, 'memory.json'));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });
 

@@ -1,4 +1,6 @@
+import { join } from 'node:path';
 import { z } from 'zod';
+import { resolveHistoryPath } from '../host/history-path';
 import { readAiSettings, writeAiSettings } from './ai-storage';
 
 export interface StandaloneAiPublicSettings {
@@ -10,6 +12,10 @@ export interface StandaloneAiPublicSettings {
   whisperIntervalSec: number;
   maxTokens: number;
   timeoutMs: number;
+  /** 对话人格提示词（留空 = 用桌宠配置里的 whisperPrompt） */
+  persona: string;
+  /** 对话历史文件路径（留空 = <DSH_HOME>/dsh-pet/memory.json） */
+  historyPath: string;
   hasKey: boolean;
 }
 export type StandaloneAiSettings = Omit<StandaloneAiPublicSettings, 'hasKey'> & { apiKey: string };
@@ -24,6 +30,8 @@ export const DEFAULT_AI_SETTINGS: Readonly<StandaloneAiSettings> = Object.freeze
   maxTokens: 1024,
   timeoutMs: 30_000,
   apiKey: '',
+  persona: '',
+  historyPath: '',
 });
 
 function safeEndpoint(value: string): boolean {
@@ -61,6 +69,15 @@ const fields = {
   whisperIntervalSec: z.number().int().min(60).max(86400),
   maxTokens: z.number().int().min(128).max(4096),
   timeoutMs: z.number().int().min(1000).max(60_000),
+  persona: z
+    .string()
+    .max(4000)
+    .refine((s) => !containsControlChar(s), '人设不能包含控制字符'),
+  historyPath: z
+    .string()
+    .max(1024)
+    .refine((s) => !containsControlChar(s), '历史路径不能包含控制字符')
+    .refine((s) => s.trim() === '' || s.trim().toLowerCase().endsWith('.json'), '历史文件必须是 .json'),
   apiKey: z
     .string()
     .max(4096)
@@ -92,20 +109,26 @@ export interface AiConfigStore {
   current(): Readonly<StandaloneAiSettings>;
   publicSettings(): StandaloneAiPublicSettings;
   save(input: unknown): Promise<StandaloneAiPublicSettings>;
+  /** 解析后的对话历史文件绝对路径（配置为空 = DSH_HOME/dsh-pet/memory.json） */
+  historyFilePath(): string;
 }
 
 export function createAiConfig(home: string): AiConfigStore {
   let settings: Readonly<StandaloneAiSettings> = DEFAULT_AI_SETTINGS;
   try {
     const loaded = readAiSettings(home);
-    if (loaded !== undefined)
-      settings = Object.freeze(validateSettings(persistedSchema.parse(loaded), DEFAULT_AI_SETTINGS));
+    if (loaded !== undefined) {
+      // 旧版本配置文件没有 persona / historyPath：先铺默认值再校验，升级不丢已有配置
+      const merged = { ...DEFAULT_AI_SETTINGS, ...(loaded as Record<string, unknown>) };
+      settings = Object.freeze(validateSettings(persistedSchema.parse(merged), DEFAULT_AI_SETTINGS));
+    }
   } catch {
     throw new Error('Cannot securely load standalone AI settings.');
   }
   return {
     current: () => settings,
     publicSettings: () => redact(settings),
+    historyFilePath: () => resolveHistoryPath(join(home, 'dsh-pet'), settings.historyPath),
     async save(input) {
       const next = validateSettings(input, settings);
       try {
